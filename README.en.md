@@ -1,6 +1,6 @@
 # ToneRelay — Adobe Lightroom Classic MCP
 
-<p align="right"><a href="README.md">中文</a> · <a href="README.en.md">English</a></p>
+[中文](README.md) · [English](README.en.md)
 
 ### Describe the look you want, and refine your photos with an AI agent.
 
