@@ -1,5 +1,7 @@
 # ToneRelay — Adobe Lightroom Classic MCP
 
+[中文](README.md) · [English](README.en.md)
+
 ### 把想要的效果说出来，和 Agent 一起把照片修到满意。
 
 > 源码预览：当前提供源码与安装说明，尚未发布稳定安装包或声明完成全平台验收。安装时请固定提交，并按 [INSTALL.md](INSTALL.md) 核验实际环境。

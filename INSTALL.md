@@ -1,5 +1,7 @@
 # 安装与连接
 
+中文 | [English](INSTALL.en.md)
+
 这份说明用于安装和维护 ToneRelay for Lightroom。应用示例见 [README](README.md)，日常修图见 [使用指南](USAGE.md)。
 
 本页与随包的公开 Skill 指南组成发行版安装说明；开发设计和内部维护记录有意不随发行，安装步骤不依赖它们。

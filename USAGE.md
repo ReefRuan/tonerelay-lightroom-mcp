@@ -1,5 +1,7 @@
 # 用对话修 Lightroom 照片
 
+中文 | [English](USAGE.en.md)
+
 安装完成后，在 Lightroom Classic 打开 Catalog，选中要处理的照片，再回到已经接入 ToneRelay 的 Agent 客户端。需要安装帮助时见 [安装指南](INSTALL.md)。
 
 ## 看当前照片和同目录图片
