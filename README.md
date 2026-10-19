@@ -10,7 +10,17 @@
 
 A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: conversational AI photo editing, reference-based color matching and color grading, subject masks, photo previews, and batch photo culling through an AI agent.
 
-**[安装指南](INSTALL.md) · [使用指南](USAGE.md) · [看实际效果](https://reefruan.github.io/tonerelay-portal/#experience) · [风格与效果画廊](https://reefruan.github.io/tonerelay-portal/#gallery) · [Portal 仓库](https://github.com/ReefRuan/tonerelay-portal) · [Bilibili 主页](https://space.bilibili.com/2869626) · [Star MCP](https://github.com/ReefRuan/tonerelay-lightroom-mcp)**
+**[看实际效果](https://reefruan.github.io/tonerelay-portal/#experience) · [风格与效果画廊](https://reefruan.github.io/tonerelay-portal/#gallery) · [安装与使用](https://reefruan.github.io/tonerelay-portal/#experience) · [联系作者](https://reefruan.github.io/tonerelay-portal/contact.html)**
+
+[安装指南](INSTALL.md) · [使用指南](USAGE.md) · [复制安装提示词](#复制给-agent开始安装) · [Portal 仓库](https://github.com/ReefRuan/tonerelay-portal) · [Bilibili 主页](https://space.bilibili.com/2869626) · [Star MCP](https://github.com/ReefRuan/tonerelay-lightroom-mcp)
+
+## 推荐先逛逛风格画廊
+
+<a href="https://reefruan.github.io/tonerelay-portal/#gallery"><img src="assets/readme/gallery-preview.png" alt="ToneRelay 风格与效果画廊预览，点击浏览不同风格的参考照片" width="360"></a>
+
+**[打开画廊，看图挑方向 →](https://reefruan.github.io/tonerelay-portal/#gallery)**
+
+还没想好怎么修？强烈推荐先点开画廊，比较不同风格的参考照片，再把喜欢的方向带回对话讨论。上方小图也可以直接点击进入；画廊照片是风格参考，不是套用预设后的效果承诺。
 
 ## 看过一版，再接着修
 
@@ -18,7 +28,7 @@ A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: convers
 
 先讨论照片想达到的效果，或发一张喜欢的参考图。Agent 给出一版后，可以继续调整阴影、高光、冷暖和层次。下面是同一次对话中，根据反馈继续精修的实际过程。
 
-[![Adobe Lightroom Classic 与 ToneRelay MCP 的对话精修：参考图、第一版结果与提亮暗部后的第二版](assets/readme/dialogue-workflow.jpg)](assets/readme/dialogue-workflow.jpg)
+[![Adobe Lightroom Classic 与 ToneRelay MCP 的对话精修：参考图、第一版结果与提亮暗部后的第二版](assets/readme/dialogue-workflow.png)](assets/readme/dialogue-workflow.png)
 
 左侧是 Lightroom 实际画面，右侧是参考图、两轮对话与修改结果。点击图片可看大图；[在 Portal 中继续浏览](https://reefruan.github.io/tonerelay-portal/#experience)。
 
@@ -38,25 +48,27 @@ A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: convers
 
 全局影调与主体局部调整可以配合进行。看过实际图片后继续修正亮度、边缘与画面关系。
 
-[![Lightroom 主体蒙版与全局曝光配合：人物提亮、原图和修改后照片的实际对比](assets/readme/subject-mask.jpg)](assets/readme/subject-mask.jpg)
+[![Lightroom 主体蒙版与全局曝光配合：人物提亮、原图和修改后照片的实际对比](assets/readme/subject-mask.png)](assets/readme/subject-mask.png)
 
 ### 把参考方向用到多张照片
 
 同一组照片的光线和主体各不相同。Agent 可以结合参考图逐张判断，再把调整结果带回 Lightroom 继续查看。
 
-[![Lightroom 参考图仿色工作流：多张参考图、按照片光线选择方向并回读调色结果](assets/readme/reference-color.jpg)](assets/readme/reference-color.jpg)
+[![Lightroom 参考图仿色工作流：多张参考图、按照片光线选择方向并回读调色结果](assets/readme/reference-color.png)](assets/readme/reference-color.png)
 
 ### 在 Lightroom 里保留选片结果
 
 浏览、比较照片后，可以按当前任务写入星级、旗标或颜色标签，并保护已有标记。
 
-[![Lightroom 批量选片与照片整理：目录网格、双图比较以及 Agent 星级和旗标写回记录](assets/readme/batch-workflow.jpg)](assets/readme/batch-workflow.jpg)
+[![Lightroom 批量选片与照片整理：目录网格、双图比较以及 Agent 星级和旗标写回记录](assets/readme/batch-workflow.png)](assets/readme/batch-workflow.png)
 
-以上图片是本次从正式 Portal 展示区重新截取的画面；其中的 Lightroom 与 Agent 对话来自作者此前的实际工作流，并非本轮重新执行修图。没有重绘照片、修改对话或虚构结果，也不作为速度或 Token 对照测试。[查看实际素材来源](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)。具体效果取决于照片、参考目标和所用模型。
+以上展示图取自 Portal，裁边与圆角仅用于页面排版；其中的 Lightroom 与 Agent 对话来自作者此前的实际工作流，并非本轮重新执行修图。没有重绘照片、修改对话或虚构结果，也不作为速度或 Token 对照测试。[查看实际素材来源](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)。具体效果取决于照片、参考目标和所用模型。
 
 ## 开始使用
 
-**[完整安装与恢复指南](INSTALL.md) · [日常使用指南](USAGE.md)**
+**[在 Portal 安装与使用 →](https://reefruan.github.io/tonerelay-portal/#experience)**
+
+[完整安装与恢复指南](INSTALL.md) · [日常使用指南](USAGE.md) · [直接复制下方安装提示词](#复制给-agent开始安装)
 
 准备好 Lightroom Classic 和一个支持本地 MCP 的 Agent 客户端。在 Lightroom 中打开要使用的 Catalog 并选中照片；安装完成后，在对话中说：
 
@@ -107,4 +119,20 @@ Copyright (C) 2026 Reef Ruan。
 
 作者主页：[GitHub](https://github.com/ReefRuan) · [Bilibili](https://space.bilibili.com/2869626) · [联系作者](https://reefruan.github.io/tonerelay-portal/contact.html)。
 
-**[进入 ToneRelay Portal →](https://reefruan.github.io/tonerelay-portal/)**
+## 复制给 Agent，开始安装
+
+点击下方代码块右上角的复制按钮，粘贴给当前 Agent 即可。这是简短引导，不替代完整流程；Agent 应先读取链接中的完整安装提示词与本仓安装指南。完整提示词继续保留在 Portal 原路径。
+
+```text
+请协助在当前 Agent 客户端安装或接入 ToneRelay for Lightroom Classic。
+先读取完整安装提示词：https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md
+以及安装指南：https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.md
+
+先只读检查系统、客户端、Lightroom 和已有 ToneRelay 安装，核对来源、固定版本及健康状态。健康且兼容时复用已有安装；只接入当前客户端，不顺便重装或升级共享组件。需下载时，核验官方公开仓 ReefRuan/tonerelay-lightroom-mcp 的真实身份、公开访问权限和固定 commit，再按该版本与当前平台的说明操作；不能核验时先报告，不使用内部仓或未知来源。
+
+完成必要的 MCP、Lightroom 插件及客户端接入；客户端支持 Skill 时接入同版本启动 Skill。使用专用安装目录并记录归属，保留照片、Catalog、预设和其他 MCP 配置。涉及 Catalog 绑定、模式或共享组件变更，以及系统要求本人确认时，先说明影响并取得对应授权。
+
+完成后在当前客户端的真实新会话中只读验证工具可见、健康状态和当前选片，并核对实际加载版本与路径；不以进程启动代替验收，不修改照片或 Catalog 内容。无法观察的结果标记待验证，不宣布成功。
+```
+
+<a href="https://reefruan.github.io/tonerelay-portal/#experience"><kbd>打开安装与使用 →</kbd></a> · **[查看完整安装提示词 →](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)**
