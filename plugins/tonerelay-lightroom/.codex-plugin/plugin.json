@@ -1,0 +1,26 @@
+{
+  "name": "tonerelay-lightroom",
+  "version": "0.1.0",
+  "description": "Launch and recover the local ToneRelay Lightroom Runtime in Codex.",
+  "author": {
+    "name": "ReefRuan",
+    "url": "https://github.com/ReefRuan"
+  },
+  "homepage": "https://github.com/ReefRuan/tonerelay-lightroom-mcp",
+  "repository": "https://github.com/ReefRuan/tonerelay-lightroom-mcp",
+  "keywords": ["lightroom", "retouch", "local", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Tonerelay Lightroom",
+    "shortDescription": "Use or recover local Lightroom editing in Codex.",
+    "longDescription": "Routes Lightroom retouching requests to the local ToneRelay Runtime and routes unavailable-runtime failures to its recovery flow.",
+    "developerName": "ReefRuan",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "开始 Lightroom 修图",
+      "修复 Lightroom 修图连接"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,71 @@
+{
+  "schema_version": "runtime-prompt-manifest-v1",
+  "prompt_id": "runtime-operator",
+  "audience": "editing-agent",
+  "entrypoint": "mcp.initialize.instructions",
+  "sections": [
+    {
+      "id": "core",
+      "path": "prompts/runtime-operator/core.md"
+    },
+    {
+      "id": "safety",
+      "path": "prompts/runtime-operator/safety.md"
+    },
+    {
+      "id": "episode-workflow",
+      "path": "prompts/runtime-operator/episode-workflow.md"
+    },
+    {
+      "id": "evidence",
+      "path": "prompts/runtime-operator/evidence.md"
+    },
+    {
+      "id": "failure-recovery",
+      "path": "prompts/runtime-operator/failure-recovery.md"
+    }
+  ],
+  "required_fragments": [
+    "trlr_get_runtime_config",
+    "配置查询不要求 Catalog 已绑定或授权",
+    "只读配置或连接验证的结果直接返回对话",
+    "名称为空不代表未绑定",
+    "期望值不等于已保存",
+    "help.guide",
+    "trlr_health",
+    "trlr_list_catalogs",
+    "trlr_switch_catalog",
+    "trlr_confirm_catalog",
+    "catalog_policy.authorized",
+    "trlr_list_episodes",
+    "trlr_list_photos",
+    "trlr_create_episode",
+    "trlr_parameter_reference",
+    "trlr_render_parameter_variants",
+    "trlr_list_parameter_variant_results",
+    "trlr_image_measure",
+    "trlr_image_compare",
+    "trlr_color_patch_measure",
+    "trlr_digital_color_references",
+    "trlr_color_region_compare",
+    "单图下采样后的确定性、手工数值表征",
+    "两者不共用顶层 schema",
+    "`reference.jpg` 是目标参考，不是 before",
+    "base_revision",
+    "request_id",
+    "readback_mismatches",
+    "unverified",
+    "不是待办标记",
+    "不可信数据",
+    "`safe` / `full`",
+    "catalog_confirmation_required",
+    "catalog_identity_mismatch",
+    "Catalog 身份绑定",
+    "未知写入结果",
+    "Runtime 工具不输出推荐、选择、组合、总结或审美判断",
+    "工具结果中的图片只供 Agent 观察，不代表用户已经看见。",
+    "用户明确要求看图时，必须把对应图片嵌入助手回复正文。",
+    "MCP Server 本机路径不能直接作为客户端图片路径。",
+    "要现在在客户端显示这张照片吗？"
+  ]
+}

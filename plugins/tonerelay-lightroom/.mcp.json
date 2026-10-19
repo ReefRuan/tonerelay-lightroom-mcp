@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "tonerelay-lightroom": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "exec \"$HOME/Library/Application Support/ToneRelay/bin/tonerelay-mcp\""
+      ],
+      "enabled": true,
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 120,
+      "default_tools_approval_mode": "prompt"
+    }
+  }
+}

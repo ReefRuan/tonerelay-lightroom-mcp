@@ -1,0 +1,6 @@
+interface:
+  display_name: ToneRelay Lightroom
+  short_description: Start or recover local Lightroom editing.
+  default_prompt: 开始 Lightroom 修图
+policy:
+  allow_implicit_invocation: true
