@@ -8,9 +8,22 @@ This page and the public Skill guides included in the package form the distribut
 
 ## Before installing
 
-Prepare Lightroom Classic, an Agent client that supports local MCP servers, and Python 3.10 or later. Use a verified, fixed commit or version of this repository, and give that fixed version to the Agent so it does not switch source versions during installation.
+Prepare Lightroom Classic, an Agent client that supports local MCP servers, and Python 3.10 or later. Use a verified full commit SHA for the installation source. Resolve any version or tag to that fixed commit first, then give it to the Agent so it does not switch source versions during installation.
 
-To have an Agent perform the installation, give it the [public installation prompt](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md). For detailed platform and client instructions, read the [installation Skill guide](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md) included in the source.
+| Purpose | GitHub primary | Gitee backup |
+| --- | --- | --- |
+| Complete MCP source, including the installer, Lightroom plug-in, and client Plugin/Skill | [tonerelay-lightroom-mcp](https://github.com/ReefRuan/tonerelay-lightroom-mcp) | [tonerelay-lightroom-mcp](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp) |
+| Complete Portal installation prompt (documentation) | [install-prompt.en.md](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md) | [install-prompt.en.md](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md) |
+
+To have an Agent perform the installation, give it the complete installation prompt above. Portal contains documentation and demonstrations, not MCP installation source; a Portal checkout cannot replace an MCP checkout. For detailed platform and client instructions, read the [installation Skill guide](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md) bundled with the selected MCP source version.
+
+Before obtaining source, verify the domain, owner, repository name, and public accessibility, and obtain the full commit SHA from verified official commit or release information. Use Git in a dedicated download directory to obtain and check out that fixed commit. Before running the installer, compare `git rev-parse HEAD` with the selected SHA, check source completeness, and retain the actual origin and verification record. `FULL_COMMIT_SHA` is only a placeholder here for a verified full commit, not a directly executable value. `main`, a short SHA, or a manually assigned version label is not a substitute for verification.
+
+For a first installation with no version already fixed by the user or an installation manifest, if only the official Gitee MCP mirror above is reachable, select and pin a version using verifiable official origin, full commit SHA, and integrity evidence from that mirror. GitHub does not have to be online at the same time. Clearly report the Gitee mirror and pinned version used; do not call it the latest version unless the primary source's latest state has been verified.
+
+If the user or an installation manifest already pins a version, switching to the Gitee MCP backup must still obtain the complete source at **the same verified commit**. The installer accepts the verified local `--source-root`; it does not require GitHub to download the Runtime afterward. The mirror can lag behind: if the selected commit is missing, report that it has not been synchronized. Do not silently downgrade or describe the mirror's HEAD as the latest primary version. Stop if origin or integrity cannot be verified; do not fall back to internal repositories or unknown third parties, or disable TLS verification. Retain the complete client Plugin/Skill and connect each client as described below. Downloading source does not install every component.
+
+The source backup does not cover Python package downloads. pip dependencies still require an available, trusted download source. If needed, set `PIP_INDEX_URL` to a verified package source; do not disable TLS verification or install from unknown sources. Managed macOS installations do not read user pip configuration files, so use that environment variable and retain failure logs. Platform arguments, Skill delivery, and client-configuration boundaries still follow the guidance below and the selected source version.
 
 ## Install all components
 

@@ -76,6 +76,10 @@ A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: convers
 
 完整安装包含 Lightroom 插件、ToneRelay MCP 和客户端启动 Skill。支持的安装入口、客户端接入和平台说明以本仓 **[INSTALL.md](INSTALL.md)** 为准；也可以把 Portal 保留的 **[安装提示词](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)** 交给 Agent 执行。
 
+MCP 源码：[GitHub 主源](https://github.com/ReefRuan/tonerelay-lightroom-mcp) · [Gitee 备用源](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp)。完整安装提示词保留在 Portal：[GitHub 文档](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) · [Gitee 备用文档](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)。Portal 是说明与展示仓库，不是 MCP 源码。
+
+安装时先核验仓库身份和完整 commit SHA，再固定该源码版本；切换下载源也保持同一 commit。备用源可能滞后，不把镜像旧版本当成最新版。具体核验、平台和客户端接入边界见 [安装指南](INSTALL.md#安装前)；源码备用源不替代 Python 依赖下载源。
+
 ## Source installation
 
 已取得并核验本仓某个固定 commit 的源码时，需要 Python 3.10 或以上。先按 [安装指南](INSTALL.md) 将源码放入专用安装目录，再从该源码根目录运行对应平台的入口，并使用当前固定版本标识。
@@ -126,13 +130,17 @@ Copyright (C) 2026 Reef Ruan。
 ```text
 请协助在当前 Agent 客户端安装或接入 ToneRelay for Lightroom Classic。
 先读取完整安装提示词：https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md
-以及安装指南：https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.md
+提示词备用文档：https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md
+安装指南：https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.md
+安装指南备用：https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.md
+MCP 源码主源：https://github.com/ReefRuan/tonerelay-lightroom-mcp
+MCP 源码备用：https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
-先只读检查系统、客户端、Lightroom 和已有 ToneRelay 安装，核对来源、固定版本及健康状态。健康且兼容时复用已有安装；只接入当前客户端，不顺便重装或升级共享组件。需下载时，核验官方公开仓 ReefRuan/tonerelay-lightroom-mcp 的真实身份、公开访问权限和固定 commit，再按该版本与当前平台的说明操作；不能核验时先报告，不使用内部仓或未知来源。
+先只读检查系统、客户端、Lightroom 和已有 ToneRelay 安装，核对来源、固定版本及健康状态。健康且兼容时复用已有安装；只接入当前客户端，不顺便重装或升级共享组件。需下载时，核验上述官方公开 MCP 仓的真实身份、公开访问权限与完整 commit SHA，并核对本地检出版本。首次安装且用户或清单没有既定版本时，若仅 Gitee 官方 MCP 镜像可达，可根据可核验的来源、完整 commit 与完整性证据选定并固定镜像版本，报告来源和版本，不冒称最新，不要求 GitHub 在线。若已有固定版本，切换下载源必须取得同一已核验 commit 的完整源码。Portal 仅提供文档，不是 MCP 源码。镜像缺少选定 commit 或来源无法核验时先报告，不静默改装旧版，不使用内部仓或未知第三方来源。Python 依赖需另有可用的可信下载源，不禁用 TLS 校验。
 
 完成必要的 MCP、Lightroom 插件及客户端接入；客户端支持 Skill 时接入同版本启动 Skill。使用专用安装目录并记录归属，保留照片、Catalog、预设和其他 MCP 配置。涉及 Catalog 绑定、模式或共享组件变更，以及系统要求本人确认时，先说明影响并取得对应授权。
 
 完成后在当前客户端的真实新会话中只读验证工具可见、健康状态和当前选片，并核对实际加载版本与路径；不以进程启动代替验收，不修改照片或 Catalog 内容。无法观察的结果标记待验证，不宣布成功。
 ```
 
-<a href="https://reefruan.github.io/tonerelay-portal/#experience"><kbd>打开安装与使用 →</kbd></a> · **[查看完整安装提示词 →](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)**
+<a href="https://reefruan.github.io/tonerelay-portal/#experience"><kbd>打开安装与使用 →</kbd></a> · **[查看完整安装提示词 →](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)** · [Gitee 备用提示词](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)

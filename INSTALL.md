@@ -8,9 +8,22 @@
 
 ## 安装前
 
-准备 Lightroom Classic、支持本地 MCP 的 Agent 客户端，以及 Python 3.10 或以上。使用本仓一个已经核验的固定 commit 或版本；把这个固定版本交给 Agent，避免安装过程中切换到不同源码。
+准备 Lightroom Classic、支持本地 MCP 的 Agent 客户端，以及 Python 3.10 或以上。安装源码使用已经核验的完整 commit SHA；版本或标签应先解析到该固定提交，再把它交给 Agent，避免安装过程中切换到不同源码。
 
-希望由 Agent 完成安装时，将 [公开安装提示词](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) 发给它。需要平台和客户端的详细步骤时，读取随源码提供的 [安装 Skill 指南](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md)。
+| 用途 | GitHub 主源 | Gitee 备用源 |
+| --- | --- | --- |
+| MCP 完整源码（含安装器、Lightroom 插件和客户端 Plugin／Skill） | [tonerelay-lightroom-mcp](https://github.com/ReefRuan/tonerelay-lightroom-mcp) | [tonerelay-lightroom-mcp](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp) |
+| Portal 完整安装提示词（文档） | [install-prompt.md](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) | [install-prompt.md](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) |
+
+希望由 Agent 完成安装时，将表中的完整安装提示词发给它。Portal 是说明与展示仓库，不是 MCP 安装源码；不能用 Portal checkout 代替 MCP checkout。需要平台和客户端的详细步骤时，读取所选 MCP 源码版本随附的 [安装 Skill 指南](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md)。
+
+取得源码前核对域名、所有者、仓名与公开访问权限，并从已核验的官方提交或发行信息取得完整 commit SHA。在专用下载目录通过 Git 获取并检出该固定提交；运行安装器前，用 `git rev-parse HEAD` 对照选定 SHA，检查源码完整性，并保留真实来源与核验记录。`FULL_COMMIT_SHA` 只是此处表示“已核验完整提交”的占位名，不是可直接执行的值；`main`、短 SHA 或自行填写的版本标签不能代替核验。
+
+首次安装且用户或安装清单没有既定版本时，若仅上述 Gitee 官方 MCP 镜像可达，可依据镜像中可核验的官方来源、完整 commit SHA 与完整性证据选定并固定该版本，不要求 GitHub 同时在线。明确报告使用的是 Gitee 镜像及其固定版本；未核实主源最新状态时，不宣称它是最新版。
+
+用户或安装清单已有固定版本时，切换到 Gitee MCP 备用源仍须取得**同一已核验 commit** 的完整源码。安装器接受核验后的本地 `--source-root`，不依赖 GitHub 继续下载 Runtime。镜像可能滞后：缺少选定提交时报告镜像尚未同步，不静默降级，也不把镜像 HEAD 宣称为主源最新版。来源或完整性无法核验时停止，不转向内部仓、未知第三方镜像或关闭 TLS 校验。保留完整客户端 Plugin／Skill，并按下文分别完成客户端接入；源码下载完成不等于全部组件已安装。
+
+源码双源不覆盖 Python 软件包下载。pip 依赖仍需可用的可信下载源；必要时通过 `PIP_INDEX_URL` 指定已经核验的软件包源，不禁用 TLS 校验，也不从未知来源安装。macOS 受管安装不读取用户 pip 配置文件，应使用该环境变量并保留失败日志。平台参数、Skill 交付和客户端配置边界仍以下文及所选源码版本的指南为准。
 
 ## 安装整套组件
 
