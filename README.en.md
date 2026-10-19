@@ -4,21 +4,17 @@
 
 ### Describe the look you want, and refine your photos with an AI agent.
 
-> Source preview: source code and installation instructions are available, but no stable installer has been released and full cross-platform acceptance has not been declared. Pin a commit when installing, and verify your actual environment using [INSTALL.en.md](INSTALL.en.md).
+> Source preview: source code and installation instructions are available, but no stable installer has been released and full cross-platform acceptance has not been declared. Pin a commit when installing, and verify your actual environment using that version's installation instructions.
 
 A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: conversational AI photo editing, reference-based color matching and color grading, subject masks, photo previews, and batch photo culling through an AI agent. View your selected photo and folder previews, refine people and lighting, then keep discussing the result. Edits remain in Lightroom Classic.
 
-**[See real workflows](https://reefruan.github.io/tonerelay-portal/?lang=en#experience) · [Style and effect gallery](https://reefruan.github.io/tonerelay-portal/?lang=en#gallery) · [Install and use](https://reefruan.github.io/tonerelay-portal/?lang=en#experience) · [Contact the author](https://reefruan.github.io/tonerelay-portal/contact.html?lang=en)**
+## [Open ToneRelay Portal · Explore features and real editing results →](https://reefruan.github.io/tonerelay-portal/?lang=en)
 
-[Installation guide](INSTALL.en.md) · [Usage guide](USAGE.en.md) · [Copy the installation prompt](#copy-this-prompt-to-your-agent) · [Portal repository](https://github.com/ReefRuan/tonerelay-portal) · [Bilibili](https://space.bilibili.com/2869626) · [Star MCP](https://github.com/ReefRuan/tonerelay-lightroom-mcp)
+<a href="https://reefruan.github.io/tonerelay-portal/?lang=en"><img src="assets/readme/gallery-preview.png" alt="Style references on ToneRelay Portal; click to explore features, real editing workflows, and reference looks" width="960"></a>
 
-## Recommended: explore the style gallery first
+**[Portal source](https://github.com/ReefRuan/tonerelay-portal) · [One-click installation](#one-click-installation)**
 
-<a href="https://reefruan.github.io/tonerelay-portal/?lang=en#gallery"><img src="assets/readme/gallery-preview.png" alt="Preview of the ToneRelay style and effect gallery; click to browse reference photos with different styles" width="360"></a>
-
-**[Open the gallery and find your direction →](https://reefruan.github.io/tonerelay-portal/?lang=en#gallery)**
-
-Not sure which look to try? We strongly recommend exploring reference photos with different styles, then bringing a favorite direction into the conversation. The thumbnail opens the gallery too. These are style references, not a promise of results from applying a preset.
+Portal brings together conversational editing, reference-based color matching, subject and lighting adjustments, and style references. Open it through the heading or screenshot.
 
 ## See a first version, then keep refining
 
@@ -28,7 +24,7 @@ Discuss the look you want, or share a reference image. After the agent produces 
 
 [![Conversational refinement in Adobe Lightroom Classic with ToneRelay MCP: reference image, first result, and a second version with brighter shadows](assets/readme/dialogue-workflow.png)](assets/readme/dialogue-workflow.png)
 
-The left shows Lightroom itself; the right shows the reference, two rounds of conversation, and their results. Click to enlarge, or [explore more on Portal](https://reefruan.github.io/tonerelay-portal/?lang=en#experience).
+The left shows Lightroom itself; the right shows the reference, two rounds of conversation, and their results. Click to enlarge.
 
 ## From one photo to a whole set
 
@@ -38,7 +34,7 @@ The left shows Lightroom itself; the right shows the reference, two rounds of co
 | Match color and tone to a reference | “Use this reference's color temperature and tonal depth to try a first version on the current photo.” |
 | Refine a person and the background | “Keep the background's current feel, and refine the subject's exposure and shadows.” |
 | Cull and organize photos | “Review this set and suggest ratings and flags first. Write them back only after I confirm.” |
-| Explore styles and effects | “Browse the gallery styles and discuss which one suits this photo.” |
+| Explore styles and effects | “Compare different style references and discuss which one suits this photo.” |
 
 ### Balance subject exposure with overall lighting
 
@@ -62,50 +58,24 @@ After reviewing and comparing photos, write ratings, flags, or color labels for 
 
 These presentation images come from Portal; trimming and rounded corners are for page layout only. The Lightroom and agent conversations within them come from the author's earlier real workflows; photo editing was not rerun for the capture. No photos were redrawn, conversations altered, or results fabricated. They are not speed or token-use benchmarks. [View the original material sources](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md). Results depend on the photo, reference target, and model used. Screenshots retain their original interface and conversation language.
 
-## Get started
+## One-click installation
 
-**[Install and use on Portal →](https://reefruan.github.io/tonerelay-portal/?lang=en#experience)**
+Copy the entire prompt below into an agent that supports local MCP servers, and let it follow the complete installation guide. “One-click” refers to copying the prompt, not installing everything without confirmation.
 
-[Full installation and recovery guide](INSTALL.en.md) · [Everyday usage](USAGE.en.md) · [Copy the prompt below](#copy-this-prompt-to-your-agent)
+```text
+Please install or connect ToneRelay for Lightroom Classic in the current Agent client.
+First read the complete official installation prompt. If GitHub is unreachable, use the Gitee documentation fallback:
+https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
+https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
 
-You need Lightroom Classic and an agent client that supports local MCP servers. Open your target Catalog in Lightroom and select a photo. After installation, say:
+Follow the complete prompt and the selected version's INSTALL.en.md. Start with read-only verification of any existing installation; if healthy and compatible, connect only this client without upgrading shared components. For downloads, verify the official origin and full commit. The prompt includes an official Gitee MCP source fallback: pin the version, do not mix components, and do not call a lagging mirror the latest.
+Connect the Lightroom plug-in, MCP, and startup Skill where supported by this platform and client, and record installation ownership. Preserve photos, Catalogs, presets, and other client configuration. Obtain the relevant authorization before changing Catalog binding, mode, or shared components. Keep TLS verification enabled and do not download dependencies from unknown sources.
+Verify tool discovery, health, and the current photo through read-only checks in a real new session in this client, including actual versions and paths. Mark unobservable results as pending; a running process is not acceptance. Do not modify photos or Catalog contents for verification.
+```
+
+The complete installation guide remains in this repository's `INSTALL.en.md`, with usage in `USAGE.en.md`. Dual-source and troubleshooting procedures remain in Portal's original documents. After installation and verification, open Lightroom Classic and the target Catalog, select a photo, and say:
 
 > Start editing in Lightroom.
-
-A complete installation includes the Lightroom plug-in, ToneRelay MCP, and the client startup Skill. Use this repository's **[INSTALL.en.md](INSTALL.en.md)** for supported entry points, client setup, and platform-specific instructions. You can also give your agent the **[installation prompt retained in Portal](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md)**.
-
-MCP source: [primary on GitHub](https://github.com/ReefRuan/tonerelay-lightroom-mcp) · [backup on Gitee](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp). The complete installation prompt remains in Portal: [GitHub documentation](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md) · [Gitee backup documentation](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md). Portal contains documentation and demonstrations, not the MCP source.
-
-Verify the repository identity and full commit SHA before pinning the source version. Keep the same commit when switching download sources. The backup can lag behind; do not present an older mirrored version as the latest. See [Before installing](INSTALL.en.md#before-installing) for verification, platform, and client-connection boundaries. A source backup does not replace the Python dependency download source.
-
-## Source installation
-
-Once you have obtained and verified the source for a fixed commit in this repository, you need Python 3.10 or later. Follow the [installation guide](INSTALL.en.md) to place the source in a dedicated installation directory, then run the appropriate platform entry point from that source root using the verified version identifier.
-
-macOS:
-
-```sh
-python3 plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap_macos.py install \
-  --source-root "$HOME/Library/Application Support/ToneRelay/downloads/source" \
-  --version "fixed-version-label" --manage-source
-```
-
-Use `--manage-source` only for a dedicated source download created for this installation, so the uninstaller can clean it up using its manifest. Do not add it for an existing development checkout; that checkout is read-only installation input. Custom paths must match the actual configured download location.
-
-Windows PowerShell:
-
-```powershell
-python plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap.py install `
-  --source-root "C:\path\to\verified-source" --version "fixed-version-label"
-```
-
-The installer reports the Lightroom plug-in location, maintenance entry point, MCP client configuration, and `next` steps. On both platforms, use the returned maintenance entry point to run `lightroom-plugin install` and register the Lightroom plug-in. Installing only the Runtime does not complete setup. Configure MCP and the startup Skill for each client, then verify the connection and selected photo in a real conversation. Use each platform's own installer; native Windows behavior must be confirmed in the actual environment. [Installation FAQ](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.en.md)
-
-On macOS, also record each connected client in the installation manifest using `record-client`. JSON `mcpServers` configurations and officially managed/TOML configurations use different registration modes; see [Record each client](INSTALL.en.md#record-each-client-macos). The original Windows entry point does not support `--manage-source` or `record-client`; do not mix platform arguments.
-
-## Dependency download help
-
-If Python dependency downloads fail, retain the installation error and logs first, then follow the [public FAQ's installation troubleshooting guidance](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.en.md). If you change `PIP_INDEX_URL`, use a verified download source. Do not disable TLS verification or install dependencies from unknown sources. Resume the existing installation after recovery; reinstalling must not mean deleting photos, Catalogs, or editing data.
 
 ## Photos and edits
 
@@ -117,28 +87,8 @@ ToneRelay is an independent project, not an official Adobe product, and is not a
 
 Copyright (C) 2026 Reef Ruan.
 
-The author's original code, runtime prompts, Skills, and documentation in the current version of this repository are licensed under [GNU AGPL-3.0-only](LICENSE), matching [Portal](https://github.com/ReefRuan/tonerelay-portal). Third-party dependencies retain their respective licenses; this project does not license Adobe software, products, or trademarks. Photos, reference images, and screenshot materials are not covered by the code's AGPL grant; their [sources and original licenses](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md) apply. Historical commits retain the licenses distributed with them; Git history has not been rewritten.
+The author's original code, runtime prompts, Skills, and documentation in the current version of this repository are licensed under [GNU AGPL-3.0-only](LICENSE), matching Portal. Third-party dependencies retain their respective licenses; this project does not license Adobe software, products, or trademarks. Photos, reference images, and screenshot materials are not covered by the code's AGPL grant; their [sources and original licenses](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md) apply. Historical commits retain the licenses distributed with them; Git history has not been rewritten.
 
-Author: [GitHub](https://github.com/ReefRuan) · [Bilibili](https://space.bilibili.com/2869626) · [Contact](https://reefruan.github.io/tonerelay-portal/contact.html?lang=en).
+## Contact
 
-## Copy this prompt to your agent
-
-Use the copy button at the top-right of the code block, then paste it into your current agent. This is a short entry prompt, not the full procedure: the agent should first read the linked complete installation prompt and this repository's installation guide. The complete prompt remains at its original Portal path.
-
-```text
-Please install or connect ToneRelay for Lightroom Classic in the current Agent client.
-First read the complete installation prompt: https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
-Backup prompt documentation: https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
-Installation guide: https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.en.md
-Backup installation guide: https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL.en.md
-Primary MCP source: https://github.com/ReefRuan/tonerelay-lightroom-mcp
-Backup MCP source: https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
-
-Start with read-only checks of the OS, client, Lightroom, and existing ToneRelay installation, including its source, pinned version, and health. Reuse a healthy, compatible installation; connecting this client does not authorize reinstalling or upgrading shared components. If downloading is necessary, verify the identity, public accessibility, and full commit SHA of the official public MCP repository above, and check the local checkout against it. For a first installation with no version already fixed by the user or a manifest, if only the official Gitee MCP mirror is reachable, select and pin a mirror version using verifiable origin, full commit, and integrity evidence. Report its origin and version without claiming it is the latest; GitHub need not be online. If a version is already pinned, switching download sources must obtain the complete source at that same verified commit. Portal provides documentation, not MCP source. Report a missing selected commit or unverifiable source; do not silently install an older version or use internal repositories or unknown third parties. Python dependencies still need an available, trusted download source; do not disable TLS verification.
-
-Complete the necessary MCP, Lightroom plug-in, and client connection. If the client supports Skills, connect the matching-version startup Skill. Use a dedicated installation directory and record ownership. Preserve photos, Catalogs, presets, and other MCP configuration. Explain the impact and obtain the relevant authorization for Catalog binding, mode or shared-component changes, and any action requiring the user's own confirmation.
-
-Verify tool discovery, health, and the current photo through read-only checks in a real new session in this client, including actual loaded versions and paths. A running process is not acceptance. Do not modify photos or Catalog contents during verification. Mark anything unobservable as pending; do not declare success without evidence.
-```
-
-<a href="https://reefruan.github.io/tonerelay-portal/?lang=en#experience"><kbd>Open Install &amp; use →</kbd></a> · **[Read the complete installation prompt →](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md)** · [Gitee backup prompt](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md)
+QQ: 1843727310 · Email: [leningruan1@gmail.com](mailto:leningruan1@gmail.com)
