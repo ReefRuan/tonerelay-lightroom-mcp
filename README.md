@@ -91,4 +91,6 @@ Copyright (C) 2026 Reef Ruan。
 
 ## 联系方式
 
+作者：[Reef](https://github.com/ReefRuan)
+
 QQ：1843727310 · 邮箱：[leningruan1@gmail.com](mailto:leningruan1@gmail.com)

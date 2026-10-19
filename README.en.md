@@ -91,4 +91,6 @@ The author's original code, runtime prompts, Skills, and documentation in the cu
 
 ## Contact
 
+Author: [Reef](https://github.com/ReefRuan)
+
 QQ: 1843727310 · Email: [leningruan1@gmail.com](mailto:leningruan1@gmail.com)
