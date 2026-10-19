@@ -68,8 +68,11 @@ macOS：
 
 ```sh
 python3 plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap_macos.py install \
-  --source-root "$HOME/Library/Application Support/ToneRelay/downloads/source" --version "fixed-version-label"
+  --source-root "$HOME/Library/Application Support/ToneRelay/downloads/source" \
+  --version "fixed-version-label" --manage-source
 ```
+
+`--manage-source` 仅登记为这次安装新建的专用下载源码，以便卸载时按清单清理。已有开发 checkout 不加这个参数，源码只作为只读安装输入；自定义目录应与实际配置的下载位置一致。
 
 Windows PowerShell：
 
@@ -78,7 +81,9 @@ python plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap.py install `
   --source-root "C:\path\to\verified-source" --version "fixed-version-label"
 ```
 
-安装结果会给出 Lightroom 插件位置、维护入口、MCP 客户端配置和 `next` 步骤。macOS 还需按返回的维护入口执行 `lightroom-plugin install`，完成 Lightroom 插件注册；不能只安装 Runtime 就认为全部接入完成。按所用客户端分别完成 MCP 与 Skill 接入，再从真实对话核对连接和当前选片。macOS 与 Windows 使用各自的安装入口；原生 Windows 运行情况需在实际环境确认。[安装常见问题](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.md)
+安装结果会给出 Lightroom 插件位置、维护入口、MCP 客户端配置和 `next` 步骤。两个平台都需按返回的维护入口执行 `lightroom-plugin install`，完成 Lightroom 插件注册；不能只安装 Runtime 就认为全部接入完成。按所用客户端分别完成 MCP 与 Skill 接入，再从真实对话核对连接和当前选片。macOS 与 Windows 使用各自的安装入口；原生 Windows 运行情况需在实际环境确认。[安装常见问题](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.md)
+
+macOS 客户端接入后还需用 `record-client` 登记安装清单；JSON `mcpServers` 与官方管理/TOML 配置的登记方式不同，详见[登记每个客户端](INSTALL.md#登记每个客户端macos)。Windows 原入口不支持 `--manage-source` 或 `record-client`，不要混用平台参数。
 
 ## Dependency download help
 
@@ -86,8 +91,12 @@ Python 依赖下载失败时，先保留安装错误与日志，再查看[公开
 
 ## 关于照片与编辑
 
-常规显影流程通过独立虚拟副本保留原片，可以查看已有版本并继续调整。星级、旗标和颜色标签会按已确认的任务写回 Catalog。RAW sidecar 等直接文件操作需要明确指定。执行情况以 Lightroom 实际回读和返回的图像为准。
+常规显影流程通过独立虚拟副本保留原片，可以查看已有版本并继续调整。星级、旗标和颜色标签会按已确认的任务写回 Catalog。RAW sidecar 等直接文件操作需要明确授权并指定目标。执行情况以 Lightroom 实际回读和返回的图像为准。
 
 ToneRelay 是独立项目，非 Adobe 官方产品，与 Adobe 无隶属或背书关系。该集成面向 **Lightroom Classic**，不等于支持云版 Lightroom 或 Photoshop。
+
+## 许可证
+
+本仓库中作者原创的代码、运行 Prompt、Skill 与说明采用 [MIT License](LICENSE)。第三方依赖继续适用各自的许可证；Adobe 软件、产品及商标不由本项目授权。照片、参考图及截图素材不纳入代码的 MIT 授权，按其[来源与原许可](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)处理。独立的 Portal 仓库继续采用它自己的许可。
 
 **[进入 ToneRelay Portal →](https://reefruan.github.io/tonerelay-portal/)**

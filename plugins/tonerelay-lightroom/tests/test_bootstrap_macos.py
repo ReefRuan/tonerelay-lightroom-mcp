@@ -582,7 +582,8 @@ class ComponentOperationTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertEqual(result["status"], "repair_needed")
-            self.assertIn("README.md#dependency-download-help", result["diagnostic"]["next"])
+            self.assertIn("https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.md",
+                          result["diagnostic"]["next"])
             self.assertIn("PIP_INDEX_URL", result["diagnostic"]["next"])
 
     def test_uninstall_without_target_returns_supported_version_commands(self):

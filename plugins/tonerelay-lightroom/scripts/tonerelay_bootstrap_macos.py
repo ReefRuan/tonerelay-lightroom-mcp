@@ -1062,9 +1062,10 @@ def install(runtime_root: Path, source_root: Path, version: str, *,
         except subprocess.CalledProcessError as exc:
             raise InstallError(
                 f"pip exited {exc.returncode} while installing "
-                "apps/workbench/requirements.txt; if this network cannot reach PyPI, "
-                "retry with PIP_INDEX_URL set to one mirror from "
-                "README.md#dependency-download-help") from exc
+                "apps/workbench/requirements.txt; review the pip error and network access. "
+                "If a verified package mirror is needed, configure PIP_INDEX_URL; "
+                "dependency download help: "
+                "https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.md") from exc
         link_runtime_plugin(staging)
         ledger.remember_tree(staging)
         ledger.checkpoint("dependencies_installed")
