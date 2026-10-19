@@ -11,6 +11,7 @@ The CLI refuses other hosts. Windows uses the separately maintained original
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import hashlib
 import json
 import os
@@ -22,14 +23,19 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
-import venv
+from functools import wraps
 from pathlib import Path
 from typing import Any
+
+# Setup/removal must not create new cache files while inspecting an installation.
+sys.dont_write_bytecode = True
 
 
 # The installer is standalone by design: it runs before the Runtime exists, so it
@@ -46,7 +52,7 @@ RUNTIME_SOURCE_DIRECTORIES = (
     "plugins/tonerelay-lightroom/scripts",
     "prompts",
 )
-RUNTIME_SOURCE_FILES = ("apps/workbench/requirements.txt",)
+RUNTIME_SOURCE_FILES = ("apps/workbench/requirements.txt", "services/lr-ops/lr_ops/configuration.py")
 RUNTIME_PYTHONPATH_ENTRIES = (
     "apps/workbench-mcp",
     "apps/workbench",
@@ -56,8 +62,20 @@ SCHEME_DEFAULT_PORTS = {"http": 80, "https": 443}
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
-class InstallError(ValueError):
-    """An explicit source bundle cannot safely become an active Runtime."""
+# The shared configuration module is standard-library only and is loaded from
+# the verified bundle before dependencies exist. Do not write into source input.
+_config_path = Path(__file__).resolve().parents[3] / "services/lr-ops/lr_ops/configuration.py"
+if not _config_path.is_file():
+    _config_path = Path(__file__).with_name("configuration.py")
+_config_spec = importlib.util.spec_from_file_location("tonerelay_install_config", _config_path)
+configuration = importlib.util.module_from_spec(_config_spec)
+_old_bytecode = sys.dont_write_bytecode
+try:
+    sys.dont_write_bytecode = True
+    _config_spec.loader.exec_module(configuration)
+finally:
+    sys.dont_write_bytecode = _old_bytecode
+InstallError = configuration.ConfigError
 
 
 # ---------------------------------------------------------------- locations
@@ -69,8 +87,28 @@ def default_runtime_root() -> Path:
 def fallback_runtime_root() -> Path:
     return default_runtime_root()
 
+def config_store(runtime_root: Path):
+    return configuration.ConfigStore(runtime_root / "config.json")
+
+
+def known_installation(runtime_root: Path):
+    for path in (runtime_root / "install-manifest.json", runtime_root.parent / "install-manifest.json"):
+        if path.is_file():
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("schema") == "tonerelay-install-manifest-v1" and record.get("runtime_root") == str(runtime_root.resolve()):
+                return record
+    return None
+
+
 def data_root(runtime_root: Path) -> Path:
-    """Select data without moving it: explicit environment, saved choice, existing data."""
+    if config_store(runtime_root).path.is_file():
+        return config_store(runtime_root).paths()["data"]
+    # Only a recognized legacy ledger opts into old selection semantics.
+    legacy_installation = known_installation(runtime_root)
+    if legacy_installation and legacy_installation.get("configuration"):
+        raise InstallError("persisted config.json is missing; restore a verified backup")
+    if not legacy_installation:
+        return config_store(runtime_root).paths()["data"]
     explicit = os.environ.get("LR_XMP_MIMIC_RUNTIME_DATA_ROOT")
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -83,22 +121,124 @@ def data_root(runtime_root: Path) -> Path:
             return Path(saved)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise InstallError(f"cannot read {selection}; restore the saved data choice: {exc}") from exc
+    for manifest in (runtime_root.parent / "install-manifest.json", runtime_root / "install-manifest.json"):
+        if manifest.is_file():
+            record = json.loads(manifest.read_text(encoding="utf-8"))
+            saved = record.get("selected_data_root")
+            if record.get("runtime_root") == str(runtime_root.resolve()) and saved:
+                if not isinstance(saved, str) or not Path(saved).is_absolute():
+                    raise InstallError("Manifest data root must be an absolute path")
+                return Path(saved)
     local = runtime_root / "data"
     legacy = Path.home() / "lr-xmp-mimic-runtime-data"
-    for candidate in (local, legacy):
+    grouped = runtime_root.parent / "data" if (runtime_root.parent / "install-manifest.json").is_file() else local
+    for candidate in (local, grouped, legacy):
         if candidate.is_dir() and any(candidate.iterdir()):
             return candidate.resolve()
-    return local.resolve()
-
+    return grouped.resolve()
 
 def remember_data_root(runtime_root: Path) -> Path:
+    if config_store(runtime_root).path.is_file():
+        return data_root(runtime_root)
+    # Existing legacy installations retain their selection; fresh installs are
+    # initialized by prepare_installation, never migrated implicitly here.
     selected = data_root(runtime_root)
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    temporary = runtime_root / ".data-selection-next.json"
-    temporary.write_text(json.dumps({"data_root": str(selected)}, sort_keys=True) + "\n",
-                         encoding="utf-8")
-    os.replace(temporary, runtime_root / "data-selection.json")
+    configuration.ConfigStore._atomic_write(runtime_root / "data-selection.json", {"data_root": str(selected)})
     return selected
+
+def validate_install_root(runtime_root: Path) -> None:
+    root = runtime_root.resolve()
+    if root == root.parent or root == Path.home().resolve() or runtime_root.is_symlink():
+        raise InstallError("choose a dedicated ToneRelay installation directory")
+    if any((parent / ".git").exists() for parent in (root, *root.parents)):
+        raise InstallError("an existing development checkout cannot be an installation root")
+    if root.exists() and not (root / "managed-root.json").exists():
+        allowed = {*configuration.PATH_NAMES, "config.json", ".config.lock", ".lifecycle.lock", "install-manifest.json"}
+        if any(child.name not in allowed for child in root.iterdir()):
+            raise InstallError("installation root contains unowned files; choose a dedicated directory")
+
+
+def read_installation(runtime_root: Path, *, required=False):
+    return lifecycle().Ledger(runtime_root, create=not required).record
+
+
+def record_configuration_paths(ledger):
+    store = config_store(ledger.runtime)
+    if not store.path.is_file():
+        return
+    paths = store.paths()
+    previous = str(ledger.run_directory())
+    if previous != str(paths["run"]):
+        history = ledger.record.setdefault("prior_run_directories", [])
+        if previous not in history:
+            history.append(previous)
+    ledger.record["configuration"] = str(store.path)
+    ledger.record["run_directory"] = str(paths["run"])
+    ledger.record["backup_directory"] = str(paths["backups"])
+    retained = ledger.record.setdefault("retained_paths", [])
+    for path in (store.path, paths["data"], paths["backups"], ledger.runtime / ".config.lock"):
+        if str(path) not in retained:
+            retained.append(str(path))
+    for path in paths.values():
+        ledger.remember(path)
+    if str(paths["data"]) not in ledger.record["data_roots"]:
+        ledger.record["data_roots"].append(str(paths["data"]))
+    ledger.save()
+
+
+def record_installation(runtime_root: Path, *, source=None, version=None, stage=None, external=None):
+    """Add installation evidence to the same exact-file ledger used for removal."""
+    ledger = lifecycle().Ledger(runtime_root, create=True)
+    record_configuration_paths(ledger)
+    ledger.record["shared_interpreter"] = {"path": str(Path(sys.executable).resolve()), "owned": False}
+    if source is not None:
+        ledger.record["source"] = {"path": str(Path(source).resolve()), "version": version,
+                                  "owned": False}
+    if external is not None:
+        entries = ledger.record.setdefault("external", [])
+        entries[:] = [entry for entry in entries if (entry.get("kind"), entry.get("path")) != (external["kind"], external["path"])]
+        entries.append(external)
+    ledger.install_files([runtime_root / "managed-root.json", runtime_root / "dist.json",
+                          runtime_root / "active", launcher_path(runtime_root), control_path(runtime_root)])
+    if stage:
+        ledger.checkpoint(stage, data_root(runtime_root))
+    else:
+        ledger.save()
+    return ledger.record
+
+
+def prepare_installation(runtime_root: Path):
+    validate_install_root(runtime_root)
+    store = config_store(runtime_root)
+    existing = known_installation(runtime_root)
+    if not store.path.is_file() and existing:
+        if existing.get("configuration"):
+            raise InstallError("persisted config.json is missing; restore a verified backup")
+        if existing.get("sources") or existing.get("data_roots") or existing.get("phase") != "prepared":
+            raise InstallError("legacy installation retained; unified configuration requires an explicitly chosen fresh installation, not implicit migration")
+    store.initialize()
+    for path in store.paths().values():
+        path.mkdir(parents=True, exist_ok=True)
+    remember_managed_root(runtime_root)
+    record_installation(runtime_root, stage="prepared")
+    return store
+
+
+def _scoped_process(method):
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        inherited = os.environ.copy()
+        temporary, bytecode = tempfile.tempdir, sys.pycache_prefix
+        cwd = Path.cwd()
+        try:
+            return method(*args, **kwargs)
+        finally:
+            os.environ.clear()
+            os.environ.update(inherited)
+            tempfile.tempdir, sys.pycache_prefix = temporary, bytecode
+            if cwd.is_dir():
+                os.chdir(cwd)
+    return wrapped
 
 
 def dist_version(runtime_root: Path) -> int:
@@ -152,11 +292,8 @@ def copy_runtime_source(source_root: Path, destination: Path) -> None:
 
 
 def create_virtualenv(version_root: Path) -> None:
-    # Preserve the selected Python distribution's executable layout. Copying a
-    # framework/managed Python binary into the venv can break its @rpath links
-    # to libpython on macOS before ensurepip even starts.
-    venv.EnvBuilder(with_pip=True, clear=True, symlinks=True).create(
-        version_root / ".venv")
+    subprocess.run([sys.executable, "-m", "venv", "--symlinks", str(version_root / ".venv")],
+                   env=runtime_env(version_root), cwd=version_root.parent.parent, check=True)
 
 
 def venv_python(version_root: Path) -> Path:
@@ -166,9 +303,9 @@ def install_dependencies(version_root: Path) -> None:
     python = venv_python(version_root)
     requirements = version_root / "source" / "apps" / "workbench" / "requirements.txt"
     subprocess.run([
-        str(python), "-m", "pip", "install", "--disable-pip-version-check",
+        str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
         "-r", str(requirements),
-    ], check=True)
+    ], env=runtime_env(version_root), cwd=version_root.parent.parent, check=True)
 
 
 def runtime_pythonpath(source: Path) -> str:
@@ -177,12 +314,15 @@ def runtime_pythonpath(source: Path) -> str:
 
 
 def runtime_env(version_root: Path) -> dict[str, str]:
-    env = os.environ.copy()
+    root = version_root.parent.parent
+    if config_store(root).path.is_file():
+        env = configuration.process_environment(config_store(root))
+    else:
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["LR_XMP_MIMIC_RUNTIME_DATA_ROOT"] = str(data_root(root))
     env["PYTHONPATH"] = runtime_pythonpath(version_root / "source")
-    if not env.get("LR_XMP_MIMIC_RUNTIME_DATA_ROOT"):
-        env["LR_XMP_MIMIC_RUNTIME_DATA_ROOT"] = str(data_root(version_root.parent.parent))
     return env
-
 
 def link_present(path: Path) -> bool:
     try:
@@ -270,11 +410,11 @@ def control_command(runtime_root: Path) -> str:
     return shlex.quote(str(control_path(runtime_root)))
 
 def bridge_pid_path(runtime_root: Path) -> Path:
-    return runtime_root / "run" / "lr-ops.pid"
+    return config_store(runtime_root).paths()["run"] / "lr-ops.pid"
 
 
 def log_path(runtime_root: Path, name: str) -> Path:
-    return runtime_root / "logs" / name
+    return config_store(runtime_root).paths()["logs"] / name
 
 
 # ---------------------------------------------------------------- bridge
@@ -338,6 +478,16 @@ def process_identity(pid: int) -> dict[str, str] | None:
         return None
 
 
+def process_executable(pid: int) -> str | None:
+    """Read the executable separately so shell command text cannot impersonate a service."""
+    try:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                                capture_output=True, text=True, check=True, timeout=3)
+        return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def posix_creation_identity(pid: int) -> str | None:
     if sys.platform == "darwin":
         import ctypes
@@ -371,7 +521,7 @@ def process_alive(pid: int) -> bool:
 
 
 def terminate_process(pid: int, expected_identity: dict[str, str] | None = None) -> bool:
-    """Only bridge_stop supplies a recorded identity; owned Popen uses its own lifecycle."""
+    """Stop only a process matching the caller's validated creation identity."""
     if not expected_identity:
         return False
     if process_identity(pid) != expected_identity:
@@ -395,12 +545,17 @@ def start_lr_ops(runtime_root: Path, version_root: Path) -> bool:
     if not python.is_file():
         return False
     host, port = bridge_endpoint()
-    logs = runtime_root / "logs"
+    bridge = config_store(runtime_root).read()["bridge"]
+    if port != bridge["port"]:
+        raise InstallError("active local target port must match config.json bridge.port")
+    host = bridge["host"]
+    logs = config_store(runtime_root).paths()["logs"]
     logs.mkdir(parents=True, exist_ok=True)
+    config_store(runtime_root).paths()["run"].mkdir(parents=True, exist_ok=True)
     log_file = log_path(runtime_root, "lr-ops.log").open("ab")
     process = subprocess.Popen(
         [str(python), "-m", "lr_ops", "serve", "--host", host, "--port", str(port)],
-        cwd=version_root / "source",
+        cwd=config_store(runtime_root).paths()["run"],
         env=runtime_env(version_root),
         stdin=subprocess.DEVNULL,
         stdout=log_file,
@@ -420,6 +575,8 @@ def start_lr_ops(runtime_root: Path, version_root: Path) -> bool:
             "command": [str(python), "-m", "lr_ops", "serve", "--host", host, "--port", str(port)],
         }, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(record_next, bridge_pid_path(runtime_root))
+        ledger = lifecycle().Ledger(runtime_root, create=True)
+        ledger.install_files([bridge_pid_path(runtime_root), log_path(runtime_root, "lr-ops.log")])
     save_identity(identity)
     deadline = time.monotonic() + BRIDGE_START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -593,7 +750,9 @@ def component_report(runtime_root: Path) -> dict[str, Any]:
             "interpreter": str(venv_python(active)) if active else None,
             "interpreter_present": bool(active and venv_python(active).is_file()),
             "dependencies": "unverified; run mcp start in the installed environment",
-            "data_selection_recorded": (runtime_root / "data-selection.json").is_file(),
+            "configuration_recorded": (runtime_root / "config.json").is_file(),
+            "configuration": str(runtime_root / "config.json"),
+            "paths": {key: str(path) for key, path in config_store(runtime_root).paths().items()},
             "next": (f"{str(control)} mcp start" if active else
                      f"{str(control)} runtime install --source-root <verified-checkout> --version <fixed-label>"),
         },
@@ -632,6 +791,7 @@ def status(runtime_root: Path) -> dict[str, Any]:
     checks = {
         "runtime_active": active is not None,
         "launcher_present": launcher_present,
+        "configuration_present": (runtime_root / "config.json").is_file(),
         "lr_ops_reachable": bridge_reachable(),
         "lightroom_plugin_bundle_present": bool(plugin and plugin.is_dir()),
         "catalog_confirmation_supported": bool(
@@ -641,7 +801,7 @@ def status(runtime_root: Path) -> dict[str, Any]:
     checks["lr_ops_build_matches_active"] = bool(
         bridge_build and bridge_build["matches_active_source"])
     expected_build = expected_plugin_build(active) if active else None
-    probe = probe_loaded_plugin() if checks["lr_ops_build_matches_active"] else None
+    probe = probe_loaded_plugin() if checks["lr_ops_build_matches_active"] and checks["configuration_present"] else None
     capabilities = probe.get("capabilities") if isinstance(probe, dict) else None
     loaded_build = probe.get("build_id") if isinstance(probe, dict) else None
     checks["lightroom_plugin_loaded"] = (
@@ -657,7 +817,12 @@ def status(runtime_root: Path) -> dict[str, Any]:
     if not ready:
         runtime_ready = (checks["runtime_active"] and checks["launcher_present"]
                          and checks["lightroom_plugin_bundle_present"])
-        if runtime_ready and not checks["catalog_confirmation_supported"]:
+        if runtime_ready and not checks["configuration_present"]:
+            diagnostic = {
+                "code": "bootstrap.configuration_missing", "safe_to_retry": False,
+                "next": "config.json is missing; restore a verified configuration or prepare a fresh installation.",
+            }
+        elif runtime_ready and not checks["catalog_confirmation_supported"]:
             diagnostic = {
                 "code": "bootstrap.runtime_upgrade_required",
                 "safe_to_retry": True,
@@ -742,22 +907,15 @@ def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 
 
 def mcp_server_config(runtime_root: Path) -> dict[str, Any]:
-    """Return a ready-to-paste stdio MCP entry for the current platform.
-
-    The command resolves through the stable ``active`` link, so it keeps working
-    across Runtime upgrades without editing the client configuration again.
-    """
-    active = runtime_root / "active"
-    return {
-        "tonerelay-lightroom": {
-            "command": str(venv_python(active)),
-            "args": ["-m", "workbench_mcp"],
-            "env": {
-                "PYTHONPATH": runtime_pythonpath(active / "source"),
-                "LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(data_root(runtime_root)),
-            },
-        }
-    }
+    if not config_store(runtime_root).path.is_file() and (runtime_root / "data-selection.json").is_file():
+        return {"tonerelay-lightroom": {"command": str(launcher_path(runtime_root)), "args": [],
+                "env": {"LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(data_root(runtime_root)),
+                        "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", "1")}}}
+    return {"tonerelay-lightroom": {
+        "command": str(launcher_path(runtime_root)), "args": [],
+        "env": {"TONERELAY_CONFIG": str(runtime_root / "config.json"),
+                "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", "1")},
+    }}
 
 
 def _write_script(path: Path, lines: list[str]) -> None:
@@ -765,6 +923,24 @@ def _write_script(path: Path, lines: list[str]) -> None:
     path.chmod(0o755)
 
 def write_bin_scripts(runtime_root: Path) -> None:
+    if not config_store(runtime_root).path.is_file():
+        return _write_legacy_bin_scripts(runtime_root)
+    (runtime_root / "bin").mkdir(parents=True, exist_ok=True)
+    shared = ["#!/bin/sh", "set -eu", f"ROOT={shlex.quote(str(runtime_root))}",
+              'export TONERELAY_CONFIG="$ROOT/config.json"',
+              'export PYTHONDONTWRITEBYTECODE=1',
+              f"export PYTHONPATH={shlex.quote(runtime_pythonpath(runtime_root / 'active/source'))}",
+              'cd "$ROOT"']
+    runner = ('exec "$ROOT/active/.venv/bin/python" '
+              '"$ROOT/active/source/services/lr-ops/lr_ops/configuration.py" launch -- '
+              '"$ROOT/active/source/plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap_macos.py" '
+              '--runtime-root "$ROOT" ')
+    _write_script(launcher_path(runtime_root), shared + [runner + 'mcp-run'])
+    _write_script(control_path(runtime_root), shared + [runner + '"$@"'])
+    record_installation(runtime_root, stage="launchers")
+
+
+def _write_legacy_bin_scripts(runtime_root: Path) -> None:
     """Write the stable launcher and the component control entry point."""
     bin_dir = runtime_root / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -784,7 +960,9 @@ def write_bin_scripts(runtime_root: Path) -> None:
         "export LR_XMP_MIMIC_RUNTIME_DATA_ROOT",
         f"PYTHONPATH={shlex.quote(pythonpath)}",
         "export PYTHONPATH",
-        'exec "$ROOT/.venv/bin/python" -m workbench_mcp',
+        'exec "$ROOT/.venv/bin/python" '
+        '"$ROOT/source/plugins/tonerelay-lightroom/scripts/tonerelay_bootstrap_macos.py" '
+        f'--runtime-root {quoted_root} mcp-run',
     ])
     _write_script(control, [
         "#!/bin/sh",
@@ -797,13 +975,19 @@ def write_bin_scripts(runtime_root: Path) -> None:
         '--runtime-root "$ROOT" "$@"',
     ])
 
-
-
-
-def install(runtime_root: Path, source_root: Path, version: str) -> int:
+@_scoped_process
+def install(runtime_root: Path, source_root: Path, version: str, *,
+            source_origin: str | None = None, source_integrity: str | None = None) -> int:
     """Install an explicit, already-verified source tree without using Git/network refs."""
     try:
         source = validate_source_root(source_root)
+        validate_install_root(runtime_root)
+        downloads = config_store(runtime_root).paths()["downloads"]
+        if (source == runtime_root.resolve() or runtime_root.resolve() in source.parents) and not (source == downloads or downloads in source.parents):
+            raise InstallError("install input inside this root must be in its downloads directory")
+        store = prepare_installation(runtime_root)
+        configuration.apply_process_environment(store)
+        record_installation(runtime_root, source=source, version=version, stage="install_started")
         version_root = runtime_version_root(runtime_root, version)
     except InstallError as exc:
         return emit({"status": "manual_action_required", "diagnostic": {
@@ -811,7 +995,27 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
             "next": str(exc),
         }}, 2)
 
-    if version_root.exists():
+    ledger = lifecycle().Ledger(runtime_root, create=True)
+    ledger.record["sources"].append({"path": str(source), "version": version,
+                                      "origin": source_origin, "integrity": source_integrity,
+                                      "verification": "caller supplied; bootstrap does not verify remote provenance"})
+    ledger.checkpoint("install_started", data_root(runtime_root))
+    existing_version = version_root.exists()
+
+    def checkpoint(phase):
+        nonlocal ledger
+        ledger = lifecycle().Ledger(runtime_root)
+        if not existing_version:
+            ledger.remember_tree(version_root)
+        ledger.install_files([
+            runtime_root / "managed-root.json", runtime_root / "data-selection.json",
+            runtime_root / "dist.json", runtime_root / "active",
+            launcher_path(runtime_root), control_path(runtime_root),
+            bridge_pid_path(runtime_root), log_path(runtime_root, "lr-ops.log"),
+        ])
+        ledger.checkpoint(phase, data_root(runtime_root))
+
+    if existing_version:
         try:
             remember_managed_root(runtime_root)
             remember_data_root(runtime_root)
@@ -819,12 +1023,15 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
             write_bin_scripts(runtime_root)
             start_lr_ops(runtime_root, version_root)
         except (InstallError, OSError, subprocess.SubprocessError) as exc:
+            checkpoint("install_failed")
             return emit({"status": "repair_needed", "diagnostic": {
                 "code": "bootstrap.install_failed", "safe_to_retry": True,
                 "next": str(exc)}}, 1)
+        checkpoint("runtime_installed")
         return emit({
             "status": "already_installed",
             "runtime_root": str(runtime_root),
+            "manifest": str(ledger.path),
             "runtime_version": version,
             "data_root": str(data_root(runtime_root)),
             "lightroom_plugin": str(runtime_root / "active" / "lightroom" / "lr-xmp-mimic.lrdevplugin"),
@@ -836,13 +1043,20 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
 
     staging = runtime_root / "versions" / f".{version}.installing"
     if staging.exists():
-        shutil.rmtree(staging)
+        return emit({"status": "repair_needed", "error": f"Partial installation remains at {staging}; inspect its manifest before resuming"}, 2)
+    selected = data_root(runtime_root)
+    if selected == staging or staging in selected.parents or selected == version_root or version_root in selected.parents:
+        return emit({"status": "repair_needed", "error": "Selected data must not be inside the version being installed"}, 2)
     try:
         remember_managed_root(runtime_root)
         remember_data_root(runtime_root)
         staging.mkdir(parents=True)
         copy_runtime_source(source, staging / "source")
+        ledger.remember_tree(staging)
+        ledger.checkpoint("source_copied")
         create_virtualenv(staging)
+        ledger.remember_tree(staging)
+        ledger.checkpoint("environment_created")
         try:
             install_dependencies(staging)
         except subprocess.CalledProcessError as exc:
@@ -852,6 +1066,8 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
                 "retry with PIP_INDEX_URL set to one mirror from "
                 "README.md#dependency-download-help") from exc
         link_runtime_plugin(staging)
+        ledger.remember_tree(staging)
+        ledger.checkpoint("dependencies_installed")
         version_root.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staging, version_root)
         activate_runtime(runtime_root, version_root)
@@ -861,14 +1077,17 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
     except (InstallError, OSError, subprocess.SubprocessError) as exc:
         if staging.exists():
             shutil.rmtree(staging)
+        checkpoint("install_failed")
         return emit({"status": "repair_needed", "diagnostic": {
             "code": "bootstrap.install_failed", "safe_to_retry": True,
             "next": str(exc),
         }}, 1)
 
+    checkpoint("runtime_installed")
     return emit({
         "status": "installed",
         "runtime_root": str(runtime_root),
+        "manifest": str(ledger.path),
         "runtime_version": version,
         "data_root": str(data_root(runtime_root)),
         "lightroom_plugin": str(runtime_root / "active" / "lightroom" / "lr-xmp-mimic.lrdevplugin"),
@@ -890,6 +1109,11 @@ def repair(runtime_root: Path) -> int:
         }}, 1)
     write_bin_scripts(runtime_root)
     start_lr_ops(runtime_root, active)
+    ledger = lifecycle().Ledger(runtime_root, create=True)
+    ledger.install_files([launcher_path(runtime_root), control_path(runtime_root),
+                          runtime_root / "data-selection.json", bridge_pid_path(runtime_root),
+                          log_path(runtime_root, "lr-ops.log")])
+    ledger.checkpoint("repaired", data_root(runtime_root))
     return emit(status(runtime_root))
 
 
@@ -913,16 +1137,6 @@ def managed_runtime_root(runtime_root: Path) -> bool:
                 return True
         except (OSError, ValueError, AttributeError):
             pass
-    versions = runtime_root / "versions"
-    if not versions.is_dir() or is_directory_link(versions):
-        return False
-    for version in versions.iterdir():
-        if version.is_dir() and not is_directory_link(version) and VERSION_PATTERN.fullmatch(version.name):
-            try:
-                validate_source_root(version / "source")
-                return True
-            except InstallError:
-                pass
     return False
 
 
@@ -946,32 +1160,44 @@ def runtime_uninstall(runtime_root: Path, version: str | None) -> int:
     if version == "all":
         if not runtime_root.is_dir():
             return emit({"status": "not_installed", "runtime_root": str(runtime_root)})
-        retained_data = data_root(runtime_root)
         try:
-            for name in ("versions", "bin", "run", "logs"):
-                path = runtime_root / name
-                if path.resolve() == retained_data or path.resolve() in retained_data.parents:
-                    raise InstallError(f"selected data is inside {path}; back it up and explicitly select "
-                                       "an external data root before uninstall")
-                if is_directory_link(path):
-                    raise InstallError(f"{path} is a link; inspect it before uninstall")
-            for name in ("active", ".active-next", ".active-previous"):
-                link = runtime_root / name
-                if link_present(link):
-                    _remove_dir_link(link)
-            for name in ("versions", "bin", "run", "logs"):
-                path = runtime_root / name
-                if path.is_dir():
-                    if retained_data == path.resolve() or path.resolve() in retained_data.parents:
-                        raise InstallError(f"selected data is inside {path}; move it explicitly before uninstall")
-                    shutil.rmtree(path)
-        except (OSError, InstallError) as exc:
-            return emit({"status": "uninstall_failed", "runtime_root": str(runtime_root),
-                         "error": str(exc), "next": "Stop the bridge and MCP clients, then retry."}, 1)
-        return emit({"status": "uninstalled", "scope": "runtime_files",
-                     "runtime_root": str(runtime_root), "data_root": str(retained_data),
-                     "data_preserved": True, "removed": True,
-                     "next": "Data and its selection record remain; uninstall the Modules entry separately."})
+            ledger = lifecycle().Ledger(runtime_root)
+            selected = data_root(runtime_root)
+            versions = runtime_root / "versions"
+            if selected == versions or versions in selected.parents:
+                raise InstallError("selected data is inside installed versions; preserve it before removal")
+            pid = bridge_pid(runtime_root)
+            if pid and process_alive(pid):
+                raise InstallError("stop the owned Bridge before uninstalling Runtime files")
+            for record_path in (path for directory in ledger.run_directories() for path in directory.glob("mcp-*.json")):
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                if record.get("runtime_root") != str(runtime_root.resolve()):
+                    raise InstallError("MCP ownership record is inconsistent")
+                if isinstance(record.get("pid"), int) and process_alive(record["pid"]):
+                    raise InstallError("close the client-owned MCP session before uninstalling Runtime files")
+            if lifecycle().process_snapshot(runtime_root, types.SimpleNamespace(**globals()))["runtime"]:
+                raise InstallError("close the client-owned MCP session or stop the Bridge before uninstalling Runtime files")
+            report = ledger.file_report()
+            for relative in sorted(report["removable"], key=lambda value: len(Path(value).parts), reverse=True):
+                ledger.local(relative).unlink()
+            for relative in sorted(ledger.record["directories"], key=lambda value: len(Path(value).parts), reverse=True):
+                path = ledger.local(relative)
+                if ledger.retains(path) or path.is_symlink():
+                    continue
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            ledger.checkpoint("runtime_uninstalled")
+            remaining = ledger.file_report()
+            return emit({"status": "runtime_files_removed", "scope": "runtime_files",
+                         "runtime_root": str(runtime_root), "data_root": str(data_root(runtime_root)),
+                         "data_preserved": True, "files": remaining,
+                         "external": ledger.record.get("external", []),
+                         "next": "Configuration, data, backups and unrecorded files remain; use offline inventory to review host entries and residues."})
+        except (OSError, ValueError, KeyError) as exc:
+            return emit({"status": "uninstall_failed", "error": str(exc),
+                         "next": "Resolve the reported ownership/process issue and retry."}, 1)
     try:
         target = runtime_version_root(runtime_root, version)
     except InstallError as exc:
@@ -1116,6 +1342,11 @@ def plugin_install(runtime_root: Path) -> int:
         return emit({"status": "install_failed", "entry": str(entry),
                      "error": str(exc),
                      "next": "Add the bundle path manually in File > Plug-in Manager."}, 1)
+    ledger = lifecycle().Ledger(runtime_root, create=True)
+    ledger.record["lightroom_entry"] = {"path": str(entry), "target": os.readlink(entry)}
+    ledger.checkpoint("plugin_registered", data_root(runtime_root))
+    record_installation(runtime_root, external={"kind": "lightroom_modules", "path": str(entry),
+        "target": str(bundle.resolve()), "owned": True, "remove": "owned link only"})
     return emit({
         "status": "installed",
         "entry": str(entry),
@@ -1138,6 +1369,8 @@ def plugin_uninstall(runtime_root: Path) -> int:
                      "next": "This entry does not point inside the Runtime root; remove it "
                              "in Lightroom if it is a ToneRelay registration."}, 2)
     _remove_dir_link(entry)
+    record_installation(runtime_root, external={"kind": "lightroom_modules", "path": str(entry),
+        "owned": True, "removed": True})
     return emit({"status": "uninstalled", "entry": str(entry),
                  "next": "Restart Lightroom so it stops loading the plugin."})
 
@@ -1203,10 +1436,16 @@ def mcp_start(runtime_root: Path, timeout: float = 30.0) -> int:
         return emit({"status": "not_applicable",
                      "reason": f"missing interpreter {python}",
                      "next": f"{control_command(runtime_root)} repair"}, 1)
+    launcher = launcher_path(runtime_root)
+    if not launcher.is_file():
+        return emit({"status": "repair_needed", "reason": "missing managed MCP launcher",
+                     "next": f"{control_command(runtime_root)} repair"}, 1)
+    environment = runtime_env(active)
+    environment["TONERELAY_PROCESS_ROLE"] = "bootstrap-diagnostic"
     process = subprocess.Popen(
-        [str(python), "-m", "workbench_mcp"],
-        cwd=str((active / "source" / "apps" / "workbench-mcp").resolve()),
-        env=runtime_env(active), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        [str(launcher)],
+        cwd=str(config_store(runtime_root).paths()["run"]),
+        env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1)
     lines: "queue.Queue[str]" = queue.Queue()
 
@@ -1263,12 +1502,91 @@ def not_applicable(component: str, action: str, reason: str, next_command: str |
 # ---------------------------------------------------------------- entry point
 
 
+def lifecycle():
+    # Loading by file also supports standalone bootstrap imports without changing
+    # the interpreter's global module search path.
+    global _lifecycle_module
+    if "_lifecycle_module" not in globals():
+        path = Path(__file__).with_name("tonerelay_lifecycle.py")
+        spec = importlib.util.spec_from_file_location("tonerelay_lifecycle", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _lifecycle_module = module
+    return _lifecycle_module
+
+
+def mcp_run(runtime_root: Path) -> int:
+    """Own one stdio child and record its actual identity for bounded removal."""
+    process = None
+    record_path = None
+    previous_handlers = {}
+    try:
+        with lifecycle().operation_lock(runtime_root):
+            ledger = lifecycle().Ledger(runtime_root)
+            if ledger.record["phase"] in ("uninstall_started", "clients_removed", "processes_stopped",
+                                           "registration_removed", "software_removed"):
+                raise InstallError("Uninstallation is in progress; this client must remove its ToneRelay entry")
+            active = active_root(runtime_root)
+            if active is None:
+                raise InstallError("No active Runtime")
+            record_configuration_paths(ledger)
+            ledger.run_directory().mkdir(parents=True, exist_ok=True)
+            process = subprocess.Popen([str(venv_python(active)), "-m", "workbench_mcp"],
+                                       env=runtime_env(active), cwd=ledger.run_directory())
+            record_path = ledger.run_directory() / f"mcp-{process.pid}.json"
+            # Framework Python can re-exec during startup; require a stable identity.
+            identity = process_identity(process.pid)
+            stable = False
+            for _ in range(10):
+                if process.poll() is not None:
+                    return process.returncode
+                time.sleep(0.05)
+                current = process_identity(process.pid)
+                if current and current == identity:
+                    stable = True
+                    break
+                identity = current
+            if not stable:
+                raise InstallError("Cannot record a stable MCP process identity")
+            lifecycle().atomic_json(record_path, {"schema": "tonerelay-owned-mcp-v1",
+                                                  "runtime_root": str(runtime_root),
+                                                  "version_root": str(active),
+                                                  "command": [str(venv_python(active)), "-m", "workbench_mcp"],
+                                                  "pid": process.pid, "identity": identity})
+            selected = data_root(runtime_root)
+            if (str(record_path.parent.relative_to(ledger.base)) not in ledger.record["directories"]
+                    or str(selected) not in ledger.record["data_roots"]):
+                ledger.remember(record_path.parent)
+                if str(selected) not in ledger.record["data_roots"]:
+                    ledger.record["data_roots"].append(str(selected))
+                ledger.save()
+        def forward(signum, frame):
+            if process.poll() is None:
+                process.send_signal(signum)
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[signum] = signal.signal(signum, forward)
+        return process.wait()
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+        if record_path:
+            record_path.unlink(missing_ok=True)
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
 COMPONENTS = ("runtime", "bridge", "lightroom-plugin", "mcp")
 ACTIONS = ("install", "uninstall", "start", "stop", "status")
 
 
 def component_action(runtime_root: Path, component: str, action: str, *,
-                     source_root: Path | None, version: str | None) -> int:
+                     source_root: Path | None, version: str | None,
+                     source_origin: str | None = None, source_integrity: str | None = None) -> int:
     """Dispatch one verb for one component; inapplicable verbs answer why."""
     control = control_command(runtime_root)
     if component == "runtime":
@@ -1279,15 +1597,14 @@ def component_action(runtime_root: Path, component: str, action: str, *,
                     "next": f"refusing to install into {runtime_root}"}}, 2)
             install_source = source_root or bundled_source_root()
             try:
-                inside_runtime = runtime_root.resolve() in install_source.resolve().parents
-            except OSError:
-                inside_runtime = False
-            if inside_runtime:
+                validate_install_root(runtime_root)
+                source = install_source.expanduser().resolve()
+                downloads = config_store(runtime_root).paths()["downloads"]
+                if (source == runtime_root.resolve() or runtime_root.resolve() in source.parents) and source != downloads and downloads not in source.parents:
+                    raise InstallError("install input inside this root must be in its downloads directory")
+            except InstallError as exc:
                 return emit({"status": "manual_action_required", "diagnostic": {
-                    "code": "runtime.install_needs_source", "safe_to_retry": True,
-                    "next": f"{install_source} is inside {runtime_root}; pass "
-                            "--source-root <verified checkout> to install a source tree, "
-                            f"or '{control_command(runtime_root)} repair' to rebuild in place"}}, 2)
+                    "code": "runtime.install_needs_source", "safe_to_retry": False, "next": str(exc)}}, 2)
             try:
                 runtime_root.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
@@ -1295,7 +1612,8 @@ def component_action(runtime_root: Path, component: str, action: str, *,
                     "code": "cli.root_not_writable", "safe_to_retry": True,
                     "next": f"{runtime_root} is not writable ({exc}); "
                             f"re-run with --runtime-root {fallback_runtime_root()}"}}, 2)
-            return install(runtime_root, install_source, version or "local")
+            return install(runtime_root, install_source, version or "local",
+                           source_origin=source_origin, source_integrity=source_integrity)
         if action == "uninstall":
             if version is None:
                 return emit({"status": "manual_action_required", "diagnostic": {
@@ -1348,14 +1666,29 @@ def component_action(runtime_root: Path, component: str, action: str, *,
         f"{control} mcp status")
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("status", "install", "repair", *COMPONENTS))
+    parser.add_argument("command", choices=("status", "install", "repair", "prepare", "inventory",
+                        "uninstall", "uninstall-check", "record-client", "mcp-run", "paths", *COMPONENTS))
     parser.add_argument("action", nargs="?", default="status",
                         help="component verb: " + ", ".join(ACTIONS))
     parser.add_argument("--runtime-root", type=Path, default=default_runtime_root())
+    parser.add_argument("--installation-root", type=Path,
+                        help="group source/runtime/data/backups beneath this dedicated parent")
+    parser.add_argument("--manage-source", action="store_true",
+                        help="include the dedicated installation-root/source download in managed removal")
+    parser.add_argument("--apply", action="store_true", help="apply the planned whole-installation removal")
+    parser.add_argument("--clients-reviewed", action="store_true",
+                        help="operator has checked every client and obtained any shared-use authorization")
+    parser.add_argument("--client", help="client name for record-client")
+    parser.add_argument("--config-path", "--client-config", dest="config_path", type=Path, help="client JSON mcpServers configuration")
+    parser.add_argument("--server-key", default="tonerelay-lightroom")
+    parser.add_argument("--client-kind", choices=("json", "official"), default="json")
+    parser.add_argument("--removal-evidence", help="observed official-client removal result; never a model's guess")
     parser.add_argument("--source-root", type=Path,
                         help="verified Runtime checkout; never defaults to a floating remote ref")
+    parser.add_argument("--source-origin", help="verified canonical source URL recorded by the operator")
+    parser.add_argument("--source-integrity", help="operator's checked archive digest or immutable source identity")
     parser.add_argument("--version",
                         help="immutable Runtime label; also selects what 'runtime uninstall' removes")
     args = parser.parse_args(argv)
@@ -1365,22 +1698,106 @@ def main(argv: list[str] | None = None) -> int:
             "code": "bootstrap.macos_required", "safe_to_retry": False,
             "next": "This entry supports macOS only. Use the Windows owner's bootstrap on Windows."}}, 2)
 
-    runtime_root = args.runtime_root.expanduser().resolve()
-    if args.command in COMPONENTS:
-        if args.action not in ACTIONS:
-            return emit({"status": "manual_action_required", "diagnostic": {
-                "code": "cli.unknown_action", "safe_to_retry": True,
-                "next": f"{args.command} supports: " + ", ".join(ACTIONS)}}, 2)
-        return component_action(runtime_root, args.command, args.action,
-                                source_root=args.source_root, version=args.version)
-    if args.command == "status":
+    raw_root = (args.installation_root if args.installation_root else args.runtime_root).expanduser().absolute()
+    if raw_root.is_symlink():
+        return emit({"status": "manual_action_required", "error": "installation root must not be a symlink"}, 2)
+    runtime_root = (args.installation_root.expanduser().resolve() / "runtime"
+                    if args.installation_root else args.runtime_root.expanduser().resolve())
+    try:
+        mutating = (args.command in ("prepare", "install", "repair", "record-client")
+                    or (args.command == "uninstall" and args.apply)
+                    or (args.command in COMPONENTS and args.command != "mcp"
+                        and args.action in ("install", "uninstall", "start", "stop")))
+        if mutating:
+            with lifecycle().operation_lock(runtime_root, args.installation_root):
+                return dispatch(args, runtime_root)
+        return dispatch(args, runtime_root)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        return emit({"status": "manual_action_required", "error": str(exc)}, 2)
+
+
+def dispatch(args, runtime_root):
+    try:
+        if config_store(runtime_root).path.is_file():
+            env = configuration.process_environment(config_store(runtime_root))
+            os.environ.clear()
+            os.environ.update(env)
+        if args.command == "prepare":
+            if args.installation_root:
+                return emit(lifecycle().prepare(args.installation_root))
+            store = prepare_installation(runtime_root)
+            return emit({"status": "prepared", "configuration": str(store.path),
+                         "manifest": str(lifecycle().Ledger(runtime_root).path),
+                         "paths": {key: str(path) for key, path in store.paths().items()}})
+        if args.command == "paths":
+            store = config_store(runtime_root)
+            return emit({"configuration": str(store.path), "persisted": store.path.is_file(),
+                         "revision": store.read()["revision"],
+                         "paths": {key: str(path) for key, path in store.paths().items()}})
+        if args.command == "mcp-run":
+            return mcp_run(runtime_root)
+        if args.command in ("inventory", "uninstall", "uninstall-check", "record-client"):
+            ledger = lifecycle().Ledger(runtime_root)
+            api = types.SimpleNamespace(**globals())
+            if args.command == "record-client":
+                if not args.client or not args.config_path:
+                    raise InstallError("record-client requires --client and --config-path")
+                result = lifecycle().record_client(ledger, args.client, args.config_path, args.server_key,
+                                                   kind=args.client_kind, evidence=args.removal_evidence)
+            elif args.command == "uninstall":
+                result = lifecycle().uninstall(ledger, api, apply=args.apply,
+                                               clients_reviewed=args.clients_reviewed)
+            else:
+                result = {"status": "observed", **lifecycle().inventory(ledger, api)}
+                if args.command == "uninstall-check":
+                    result["status"] = "software_removed" if all(result["checks"].values()) and result["phase"] == "software_removed" else "removal_pending"
+            return emit(lifecycle().compact_report(result), 0 if result["status"] in ("recorded", "planned", "observed", "software_removed") else 2)
+        if (args.installation_root or args.manage_source) and (args.command == "install" or
+                                       (args.command == "runtime" and args.action == "install")):
+            if not args.installation_root:
+                prepare_installation(runtime_root)
+            ledger = lifecycle().Ledger(runtime_root, installation_root=args.installation_root, create=True)
+            if args.manage_source:
+                if not args.source_root or args.source_root.expanduser().resolve() != (config_store(runtime_root).paths()["downloads"] / "source" if config_store(runtime_root).path.is_file() else ledger.base / "source"):
+                    raise InstallError("--manage-source requires the dedicated downloads/source input (source for legacy grouped layouts)")
+                validate_source_root(args.source_root)
+                ledger.remember_tree(args.source_root.expanduser().resolve())
+                ledger.record["managed_source"] = str(args.source_root.expanduser().resolve())
+                ledger.save()
+        elif args.manage_source:
+            raise InstallError("--manage-source is only valid with install")
+        if args.command in COMPONENTS:
+            if args.action not in ACTIONS:
+                return emit({"status": "manual_action_required", "diagnostic": {
+                    "code": "cli.unknown_action", "safe_to_retry": True,
+                    "next": f"{args.command} supports: " + ", ".join(ACTIONS)}}, 2)
+            return component_action(runtime_root, args.command, args.action,
+                                    source_root=args.source_root, version=args.version,
+                                    source_origin=args.source_origin, source_integrity=args.source_integrity)
+        if args.command == "status":
+            return emit(status(runtime_root))
+        if args.command == "install":
+            return component_action(runtime_root, "runtime", "install",
+                                    source_root=args.source_root, version=args.version,
+                                    source_origin=args.source_origin, source_integrity=args.source_integrity)
+        if args.command == "repair":
+            return repair(runtime_root)
         return emit(status(runtime_root))
-    if args.command == "install":
-        return component_action(runtime_root, "runtime", "install",
-                                source_root=args.source_root, version=args.version)
-    if args.command == "repair":
-        return repair(runtime_root)
-    return emit(status(runtime_root))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        # MCP stdout is protocol-only; startup errors belong on stderr.
+        if args.command == "mcp-run":
+            print(f"ToneRelay MCP startup failed: {exc}", file=sys.stderr)
+            return 2
+        return emit({"status": "manual_action_required", "error": str(exc),
+                     "next": "Resolve the reported checkpoint, then resume the same command."}, 2)
+
+
+@_scoped_process
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except (InstallError, OSError) as exc:
+        return emit({"status": "manual_action_required", "error": str(exc)}, 2)
 
 
 if __name__ == "__main__":

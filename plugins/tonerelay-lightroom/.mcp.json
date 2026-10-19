@@ -6,6 +6,9 @@
         "-c",
         "exec \"$HOME/Library/Application Support/ToneRelay/bin/tonerelay-mcp\""
       ],
+      "env": {
+        "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"
+      },
       "enabled": true,
       "startup_timeout_sec": 20,
       "tool_timeout_sec": 120,

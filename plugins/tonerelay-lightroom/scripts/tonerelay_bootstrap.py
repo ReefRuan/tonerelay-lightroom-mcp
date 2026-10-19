@@ -582,7 +582,23 @@ def status(runtime_root: Path) -> dict[str, Any]:
     if not ready:
         runtime_ready = (checks["runtime_active"] and checks["launcher_present"]
                          and checks["lightroom_plugin_bundle_present"])
-        if runtime_ready and checks["lr_ops_reachable"]:
+        if runtime_ready and checks["lr_ops_reachable"] and (
+                not isinstance(probe, dict) or probe.get("error")
+                or not isinstance(loaded_build, str) or not loaded_build
+                or not isinstance(capabilities, dict)):
+            diagnostic = {
+                "code": "bootstrap.plugin_probe_unavailable",
+                "safe_to_retry": False,
+                "expected_build": expected_build,
+                "loaded_build": loaded_build,
+                "probe_error": probe.get("error") if isinstance(probe, dict) else None,
+                "next": "The Bridge is reachable, but the active Lightroom plugin contract is unknown. "
+                        "Unlock the desktop, check Lightroom for open menus, dialogs or ongoing operations, "
+                        "and inspect ToneRelay's bridge status in File > Plug-in Extras. "
+                        "Do not infer an old or missing plugin from an unanswered probe. "
+                        "After the application state changes, run status again; do not replay unknown writes.",
+            }
+        elif runtime_ready and checks["lr_ops_reachable"]:
             diagnostic = {
                 "code": "bootstrap.plugin_reload_required",
                 "safe_to_retry": False,
@@ -621,21 +637,25 @@ def emit(payload: dict[str, Any], exit_code: int = 0) -> int:
 # ---------------------------------------------------------------- bin scripts
 
 
-def mcp_server_config(runtime_root: Path) -> dict[str, Any]:
+def mcp_server_config(runtime_root: Path, *, client: str = "native") -> dict[str, Any]:
     """Return a ready-to-paste stdio MCP entry for the current platform.
 
     The command resolves through the stable ``active`` link, so it keeps working
     across Runtime upgrades without editing the client configuration again.
+    All local clients receive file references for assistant-body rendering.
+    Clients without shared file access can set the local image environment to 0.
     """
     active = runtime_root / "active"
+    env = {
+        "PYTHONPATH": runtime_pythonpath(active / "source"),
+        "LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(data_root(runtime_root)),
+        "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", "1"),
+    }
     return {
         "tonerelay-lightroom": {
             "command": str(venv_python(active)),
             "args": ["-m", "workbench_mcp"],
-            "env": {
-                "PYTHONPATH": runtime_pythonpath(active / "source"),
-                "LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(data_root(runtime_root)),
-            },
+            "env": env,
         }
     }
 
@@ -702,7 +722,7 @@ def write_bin_scripts(runtime_root: Path) -> None:
 # ---------------------------------------------------------------- operations
 
 
-def install(runtime_root: Path, source_root: Path, version: str) -> int:
+def install(runtime_root: Path, source_root: Path, version: str, *, client: str = "native") -> int:
     """Install an explicit, already-verified source tree without using Git/network refs."""
     try:
         source = validate_source_root(source_root)
@@ -725,7 +745,7 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
             "lightroom_plugin": str(runtime_root / "active" / "lightroom" / "lr-xmp-mimic.lrdevplugin"),
             "control": str(control_path(runtime_root)),
             "launcher": str(launcher_path(runtime_root)),
-            "mcp_server": mcp_server_config(runtime_root),
+            "mcp_server": mcp_server_config(runtime_root, client=client),
             "verification": status(runtime_root),
         })
 
@@ -767,7 +787,7 @@ def install(runtime_root: Path, source_root: Path, version: str) -> int:
         "lightroom_plugin": str(runtime_root / "active" / "lightroom" / "lr-xmp-mimic.lrdevplugin"),
         "control": str(control_path(runtime_root)),
         "launcher": str(launcher_path(runtime_root)),
-        "mcp_server": mcp_server_config(runtime_root),
+        "mcp_server": mcp_server_config(runtime_root, client=client),
         "verification": status(runtime_root),
         "next": f"Use {control_path(runtime_root)} for start/stop/status, add mcp_server to the "
                 "client's stdio MCP config, and register lightroom_plugin in Lightroom.",
@@ -954,14 +974,14 @@ def plugin_status(runtime_root: Path) -> int:
     })
 
 
-def mcp_status(runtime_root: Path) -> int:
+def mcp_status(runtime_root: Path, *, client: str = "native") -> int:
     launcher = launcher_path(runtime_root)
     active = active_root(runtime_root)
     return emit({
         "status": "present" if launcher.is_file() else "missing",
         "launcher": str(launcher),
         "control": str(control_path(runtime_root)),
-        "mcp_server": mcp_server_config(runtime_root) if active else None,
+        "mcp_server": mcp_server_config(runtime_root, client=client) if active else None,
         "next": None if active else f"{control_path(runtime_root)} runtime install ...",
     })
 
@@ -1055,7 +1075,8 @@ ACTIONS = ("install", "uninstall", "start", "stop", "status")
 
 
 def component_action(runtime_root: Path, component: str, action: str, *,
-                     source_root: Path | None, version: str | None) -> int:
+                     source_root: Path | None, version: str | None,
+                     client: str = "native") -> int:
     """Dispatch one verb for one component; inapplicable verbs answer why."""
     control = control_path(runtime_root)
     if component == "runtime":
@@ -1082,7 +1103,7 @@ def component_action(runtime_root: Path, component: str, action: str, *,
                     "code": "cli.root_not_writable", "safe_to_retry": True,
                     "next": f"{runtime_root} is not writable ({exc}); "
                             f"re-run with --runtime-root {fallback_runtime_root()}"}}, 2)
-            return install(runtime_root, install_source, version or "local")
+            return install(runtime_root, install_source, version or "local", client=client)
         if action == "uninstall":
             if version is None:
                 return emit({"status": "manual_action_required", "diagnostic": {
@@ -1123,7 +1144,7 @@ def component_action(runtime_root: Path, component: str, action: str, *,
     if action == "start":
         return mcp_start(runtime_root)
     if action == "status":
-        return mcp_status(runtime_root)
+        return mcp_status(runtime_root, client=client)
     if action == "stop":
         return not_applicable(
             component, action,
@@ -1145,6 +1166,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="verified Runtime checkout; never defaults to a floating remote ref")
     parser.add_argument("--version",
                         help="immutable Runtime label; also selects what 'runtime uninstall' removes")
+    parser.add_argument("--client", choices=("native", "codex"), default="native",
+                        help="MCP config recipient; local image references are enabled by default "
+                             "for all clients sharing this host filesystem")
     args = parser.parse_args(argv)
 
     runtime_root = args.runtime_root.expanduser().resolve()
@@ -1154,12 +1178,14 @@ def main(argv: list[str] | None = None) -> int:
                 "code": "cli.unknown_action", "safe_to_retry": True,
                 "next": f"{args.command} supports: " + ", ".join(ACTIONS)}}, 2)
         return component_action(runtime_root, args.command, args.action,
-                                source_root=args.source_root, version=args.version)
+                                source_root=args.source_root, version=args.version,
+                                client=args.client)
     if args.command == "status":
         return emit(status(runtime_root))
     if args.command == "install":
         return component_action(runtime_root, "runtime", "install",
-                                source_root=args.source_root, version=args.version)
+                                source_root=args.source_root, version=args.version,
+                                client=args.client)
     if args.command == "repair":
         return repair(runtime_root)
     return emit(status(runtime_root))

@@ -312,6 +312,22 @@ class TestDispatchInjection(FileEndpointBase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("outside the staged output directory", job["result"]["error"])
 
+    def test_reported_success_with_missing_file_fails_without_output_handle(self):
+        job_id = "ac9d0c9e-1111-4222-8333-444455556666"
+        directory = self.staging.prepare_output(job_id)
+        self.queue._jobs[job_id] = {
+            "job_id": job_id, "command": "export_preview", "params": {},
+            "status": "dispatched",
+        }
+        self.queue._order.append(job_id)
+        self.call("POST", f"/jobs/{job_id}/result", {
+            "ok": True, "data": {"output_path": str(directory / "missing.jpg")},
+        })
+        _, job = self.call("GET", f"/jobs/{job_id}")
+        self.assertEqual(job["status"], "failed")
+        self.assertNotIn("output_ref", job["result"].get("data", {}))
+        self.assertEqual(self.staging.collect_output(job_id), [])
+
     def test_honest_output_completes_with_a_handle_not_a_path(self):
         job_id = "fc9d0c9e-1111-4222-8333-444455556666"
         directory = self.staging.prepare_output(job_id)

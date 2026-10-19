@@ -214,16 +214,23 @@ class SelectionProtocolTests(unittest.TestCase):
             "effective_max_edge": 128,
         })
         self.assertNotIn("/private/", json.dumps(payload))
-        # leading page JSON, then text/image paired in the same order.
+        # Page JSON, then per-photo label/display/native image in order.
         self.assertEqual([block["type"] for block in result["content"]],
-                         ["text", "text", "image", "text", "image"])
+                         ["text", "text", "text", "image", "text", "text", "image"])
         first_label = json.loads(result["content"][1]["text"])
-        second_label = json.loads(result["content"][3]["text"])
-        self.assertEqual([first_label["photo"]["file_name"],
-                          second_label["photo"]["file_name"]],
+        second_label = json.loads(result["content"][4]["text"])
+        self.assertEqual([first_label["file_name"],
+                          second_label["file_name"]],
                          ["IMG_0001.RAF", "IMG_0002.RAF"])
         self.assertEqual([first_label["index"], second_label["index"]], [0, 1])
-        for image_block in (result["content"][2], result["content"][4]):
+        self.assertEqual({"index", "file_name"}, set(first_label))
+        self.assertEqual({"index", "file_name"}, set(second_label))
+        for image_index, position in enumerate((3, 6)):
+            reference = json.loads(result["content"][position - 1]["text"])["display"]
+            image_block = result["content"][position]
+            self.assertEqual(reference["image_index"], image_index)
+            self.assertEqual(reference["kind"], "local_file")
+            self.assertEqual(Path(reference["path"]).read_bytes(), base64.b64decode(image_block["data"]))
             self.assertEqual(image_block["mimeType"], "image/jpeg")
             with Image.open(io.BytesIO(base64.b64decode(image_block["data"]))) as image:
                 self.assertLessEqual(max(image.size), 128)
@@ -244,11 +251,11 @@ class SelectionProtocolTests(unittest.TestCase):
             "reason": "fast_thumbnail_unavailable",
         })
         self.assertEqual([block["type"] for block in result["content"]],
-                         ["text", "text", "image", "text"])
-        unavailable_label = json.loads(result["content"][3]["text"])
+                         ["text", "text", "text", "image", "text"])
+        unavailable_label = json.loads(result["content"][4]["text"])
         self.assertEqual(unavailable_label["index"], 1)
-        self.assertEqual(unavailable_label["photo"]["file_name"], "IMG_0002.RAF")
-        self.assertEqual(unavailable_label["preview"]["state"], "unavailable")
+        self.assertEqual(unavailable_label["file_name"], "IMG_0002.RAF")
+        self.assertEqual(unavailable_label["state"], "unavailable")
         self.assertNotIn("/private/", "".join(
             block.get("text", "") for block in result["content"]))
         self.assertEqual(self.bridge.thumbnail_sizes, [512, 512])

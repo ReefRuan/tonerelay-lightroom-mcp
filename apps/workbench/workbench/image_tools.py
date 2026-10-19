@@ -350,7 +350,7 @@ class ImageTools:
         state_path, path = directory / 'episode.json', directory / name
         if state_path.is_symlink() or path.is_symlink():
             raise ValueError('Artifact symlinks are not accepted')
-        state = json.loads(state_path.read_text())  # Deliberately no Studio.get recovery/write.
+        state = json.loads(state_path.read_text(encoding='utf-8'))  # Deliberately no Studio.get recovery/write.
         versions = state.get('versions') or []
         if not versions:
             raise ValueError('No published version yet')

@@ -58,6 +58,8 @@ function catalog:findPhotoByUuid(uuid)
 end
 function catalog:setSelectedPhotos(photo) selected = photo end
 function catalog:getTargetPhoto() return selected end
+function catalog:getTargetPhotos() return { selected } end
+function catalog:getMultipleSelectedOrAllPhotos() return { source, copy } end
 function catalog:withWriteAccessDo(_, callback)
   writeGateCount = writeGateCount + 1
   callback(); return 'executed'
@@ -73,13 +75,13 @@ import = function(name)
     return { activeCatalog = function() return catalog end, versionString = function() return '15.4.1' end,
       addDevelopPresetForPlugin = function() return {} end }
   elseif name == 'LrExportSession' then
-    return function(_) return { doExportOnCurrentTask = function() end } end
+    return function(options) return { renditions = function() return ipairs({ { photo = options.photosToExport[1], waitForRender = function() return true, '/tmp/batch/source.jpg' end } }) end } end
   elseif name == 'LrFileUtils' then
     return { createAllDirectories = function() end,
-      exists = function() return true end, delete = function() end,
+      exists = function() return 'file' end, fileAttributes = function() return { fileSize = 8 } end, delete = function() end,
       writeFile = function() return true end }
   elseif name == 'LrPathUtils' then
-    return { child = function(dir, name) return dir .. '/' .. name end }
+    return { child = function(dir, name) return dir .. '/' .. name end, parent = function(path) return path:match('^(.*)/[^/]+$') end }
   elseif name == 'LrTasks' then
     return { pcall = function(fn, ...) return pcall(fn, ...) end,
       sleep = function() end }

@@ -144,11 +144,14 @@ class SessionTools:
 
     # ---- 导出 ------------------------------------------------------------------
 
-    def _live_export(self, photo_uuid: str, max_edge: int) -> tuple[bytes, int, list]:
-        """按重试阶梯渲染导出；返回 (字节, 实际 edge, 尝试记录)。"""
-        ladder = [max_edge]
+    def _live_export(self, photo_uuid: str, max_edge: int | None) -> tuple[bytes, int, list]:
+        """按重试阶梯渲染导出；返回 (字节, 实际 edge, 尝试记录)。
+
+        max_edge=None 表示全尺寸导出（long_edge=0，Lightroom 端不做尺寸约束）。
+        """
+        ladder = [0 if max_edge is None else max_edge]
         for fallback in EXPORT_EDGE_LADDER:
-            if fallback < ladder[-1]:
+            if ladder[-1] == 0 or fallback < ladder[-1]:
                 ladder.append(fallback)
         attempts = []
         for edge in ladder:
@@ -158,10 +161,12 @@ class SessionTools:
                 ref = data.get("output_ref")
                 if not ref:
                     raise LrOpsError("导出未返回文件句柄；请重启 lr-ops 桥以加载新协议")
-                with tempfile.NamedTemporaryFile(prefix="trlr-export-", suffix=".jpg",
-                                                 delete=True) as handle:
-                    self.wb.lrops.fetch_output(ref, Path(handle.name))
-                    content = Path(handle.name).read_bytes()
+                # The bridge must open its destination itself. A still-open
+                # delete-on-close NamedTemporaryFile prevents that on Windows.
+                with tempfile.TemporaryDirectory(prefix="trlr-export-") as directory:
+                    destination = Path(directory) / "preview.jpg"
+                    self.wb.lrops.fetch_output(ref, destination)
+                    content = destination.read_bytes()
                 if not content:
                     raise LrOpsError("导出返回空文件")
                 attempts.append({"edge": edge, "ok": True})
@@ -172,10 +177,16 @@ class SessionTools:
                          + json.dumps(attempts, ensure_ascii=False))
 
     def export_image(self, photo_uuid=None, session_id=None, round=None,
-                     max_edge=2048, format="jpeg", quality=90) -> dict:
-        """服务端渲染 + 缩放导出，返回 artifact_ref + sha256（图不进上下文）。"""
+                     max_edge=None, format="jpeg", quality=90) -> dict:
+        """服务端渲染 + 可选缩放导出，返回 artifact_ref + sha256（图不进上下文）。
+
+        max_edge 缺省为 None，即按原始分辨率全尺寸导出；只有用户明确要求
+        指定尺寸的成品时才传 max_edge。看图时的跨工具回退由 Runtime Operator
+        提示词规定，本工具仍只返回导出元数据与文件引用。
+        """
         # 桥的 live 导出只产 JPEG；不提供把有损源重编码成 PNG 的选项。
-        _check_edge(max_edge)
+        if max_edge is not None:
+            _check_edge(max_edge, hi=16384)
         if format not in EXPORT_FORMATS:
             raise ValueError(f"format must be one of {EXPORT_FORMATS}")
         if type(quality) is not int or not 1 <= quality <= 100:
@@ -205,7 +216,7 @@ class SessionTools:
             basis = "live_export"
 
         image = Image.open(io.BytesIO(content)).convert("RGB")
-        if max(image.size) > max_edge:
+        if max_edge is not None and max(image.size) > max_edge:
             scale = max_edge / max(image.size)
             image = image.resize((max(1, builtins.round(image.width * scale)),
                                   max(1, builtins.round(image.height * scale))), Image.LANCZOS)
@@ -241,7 +252,7 @@ class SessionTools:
         result = {
             "basis": basis,
             "requested_max_edge": max_edge,
-            "actual_edge": actual_edge if actual_edge is not None else max(image.size),
+            "actual_edge": (actual_edge if actual_edge else max(image.size)),
             "dimensions": [image.width, image.height],
             "format": format,
             "quality": quality,
@@ -323,22 +334,27 @@ class SessionTools:
 
         directory_fds = []
         try:
-            root_fd = os.open(resolved_store_root, directory_flags)
-            directory_fds.append(root_fd)
-            parent_fd = root_fd
-            for component in ("sessions", session_id, "previews"):
-                parent_fd = os.open(component, directory_flags, dir_fd=parent_fd)
-                directory_fds.append(parent_fd)
-            file_fd = os.open(candidate.name, file_flags, dir_fd=parent_fd)
-            try:
-                if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                    raise StoreError("session preview is not a regular file")
-                with os.fdopen(file_fd, "rb") as handle:
-                    file_fd = None
-                    content = handle.read(MAX_BYTES + 1)
-            finally:
-                if file_fd is not None:
-                    os.close(file_fd)
+            if os.name == "nt":
+                from .windows_files import read_preview
+                content = read_preview(resolved_store_root, session_id,
+                                       candidate.name, MAX_BYTES)
+            else:
+                root_fd = os.open(resolved_store_root, directory_flags)
+                directory_fds.append(root_fd)
+                parent_fd = root_fd
+                for component in ("sessions", session_id, "previews"):
+                    parent_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+                    directory_fds.append(parent_fd)
+                file_fd = os.open(candidate.name, file_flags, dir_fd=parent_fd)
+                try:
+                    if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                        raise StoreError("session preview is not a regular file")
+                    with os.fdopen(file_fd, "rb") as handle:
+                        file_fd = None
+                        content = handle.read(MAX_BYTES + 1)
+                finally:
+                    if file_fd is not None:
+                        os.close(file_fd)
         except FileNotFoundError as exc:
             raise StoreError(f"preview file missing: {path}") from exc
         except StoreError:

@@ -9,10 +9,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from lr_ops.configuration import active_store
 
 DEFAULT_BASE = "http://127.0.0.1:17777"
 DEFAULT_PROBE_TIMEOUT = 3.0
 FAST_THUMBNAIL_UNAVAILABLE_MARKER = "TRLR_FAST_THUMBNAIL_UNAVAILABLE:"
+_ENV_TOKEN = object()
 
 
 class LrOpsError(RuntimeError):
@@ -33,9 +35,22 @@ class LrOpsClient:
     ``lr_ops.staging`` for the bridge side of that contract.
     """
 
-    def __init__(self, base: str | None = None, token: str | None = None, timeout: float = 120.0):
-        self.base = (base or os.environ.get("LROPS_BASE") or DEFAULT_BASE).rstrip("/")
-        self.token = token if token is not None else os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN")
+    def __init__(self, base: str | None = None, token=_ENV_TOKEN, timeout: float = 120.0):
+        config = active_store() if base is None or token is _ENV_TOKEN else None
+        target = None
+        if config is not None:
+            targets = config.read()["targets"]
+            target = next(t for t in targets["targets"] if t["id"] == targets["active"])
+        self.base = (base or (target["base"] if target else os.environ.get("LROPS_BASE")) or DEFAULT_BASE).rstrip("/")
+        # Explicit None means this target has no credential. It must never
+        # inherit another Bridge's token from its parent process.
+        if token is _ENV_TOKEN:
+            if target is not None:
+                self.token = target["token"] if self.base == target["base"].rstrip("/") else None
+            else:
+                self.token = os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN")
+        else:
+            self.token = token
         self.timeout = timeout
 
     # ---- plumbing ----------------------------------------------------------
@@ -66,9 +81,12 @@ class LrOpsClient:
         except LrOpsError:
             return False
 
-    def run(self, command: str, params: dict | None = None, timeout: float | None = None) -> dict:
+    def run(self, command: str, params: dict | None = None, timeout: float | None = None,
+            on_submitted=None) -> dict:
         """Submit a job and wait for the Lightroom plugin to finish it."""
         job_id = self._request("POST", "/jobs", {"command": command, "params": params or {}})["job_id"]
+        if on_submitted is not None:
+            on_submitted(job_id)
         # The identity probe does no rendering or Catalog write. A missing
         # plugin must fail this prerequisite promptly, rather than spend the
         # ordinary job budget before every selection/edit call. Keep explicit
@@ -95,6 +113,11 @@ class LrOpsClient:
                 return result.get("data") or {}
             time.sleep(0.4)
         raise LrOpsError(f"Job {command} timed out; is the bridge running inside Lightroom?")
+
+    def get_job(self, job_id: str) -> dict:
+        if not isinstance(job_id, str) or not 1 <= len(job_id) <= 128 or any(c not in "0123456789abcdef-" for c in job_id):
+            raise ValueError("invalid job_id")
+        return self._request("GET", f"/jobs/{job_id}")
 
     # ---- files -------------------------------------------------------------
 

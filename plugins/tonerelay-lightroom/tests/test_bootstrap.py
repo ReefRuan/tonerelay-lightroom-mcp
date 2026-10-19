@@ -10,6 +10,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import venv
 from pathlib import Path
 from unittest import mock
 
@@ -50,6 +51,41 @@ class BootstrapStatusTests(unittest.TestCase):
         self.assertFalse(result["checks"]["lightroom_plugin_loaded"])
         self.assertEqual(result["diagnostic"]["code"],
                          "bootstrap.plugin_reload_required")
+
+    def test_unavailable_probe_does_not_infer_reload(self):
+        cases = (
+            None,
+            {},
+            {"error": "plugin did not answer probe_client before timeout"},
+            {"error": "timeout", "build_id": "selection-gallery-old"},
+            {"build_id": "", "capabilities": {"current_folder_selection": True}},
+            {"build_id": 123, "capabilities": {"current_folder_selection": True}},
+            {"build_id": "selection-gallery-current"},
+            {"capabilities": {"current_folder_selection": True}},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = self.runtime_root(Path(temporary))
+            for probe in cases:
+                with self.subTest(probe=probe), \
+                     mock.patch.object(bootstrap, "bridge_reachable", return_value=True), \
+                     mock.patch.object(bootstrap, "probe_loaded_plugin", return_value=probe):
+                    result = bootstrap.status(root)
+                diagnostic = result["diagnostic"]
+                self.assertEqual(result["status"], "repair_needed")
+                self.assertFalse(result["checks"]["lightroom_plugin_loaded"])
+                self.assertEqual(diagnostic["code"], "bootstrap.plugin_probe_unavailable")
+                self.assertEqual(diagnostic["expected_build"], "selection-gallery-current")
+                self.assertEqual(diagnostic["loaded_build"],
+                                 probe.get("build_id") if isinstance(probe, dict) else None)
+                self.assertEqual(diagnostic["probe_error"],
+                                 probe.get("error") if isinstance(probe, dict) else None)
+                self.assertFalse(diagnostic["safe_to_retry"])
+                self.assertIn("Unlock", diagnostic["next"])
+                self.assertIn("open menus, dialogs", diagnostic["next"])
+                self.assertIn("Do not infer", diagnostic["next"])
+                self.assertIn("do not replay unknown writes", diagnostic["next"])
+                self.assertNotIn("Quit and reopen", diagnostic["next"])
+                self.assertNotIn("lightroom-plugin install", diagnostic["next"])
 
     def test_matching_loaded_plugin_is_ready(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -228,6 +264,73 @@ class BootstrapPlatformTests(unittest.TestCase):
             [str(root / "active" / "source" / relative)
              for relative in bootstrap.RUNTIME_PYTHONPATH_ENTRIES])
 
+    def test_local_images_default_on_for_all_platforms_and_client_labels(self):
+        root = Path("/tmp/预览 runtime")
+        for platform in ("win32", "darwin", "linux"):
+            with self.subTest(platform=platform), \
+                 mock.patch.object(bootstrap, "IS_WINDOWS", platform == "win32"), \
+                 mock.patch.object(bootstrap.sys, "platform", platform), \
+                 mock.patch.dict(bootstrap.os.environ, {}):
+                bootstrap.os.environ.pop("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", None)
+                generic = bootstrap.mcp_server_config(root)["tonerelay-lightroom"]
+                codex = bootstrap.mcp_server_config(root, client="codex")["tonerelay-lightroom"]
+                self.assertEqual(generic["env"]["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"], "1")
+                self.assertEqual(codex, generic)
+                with mock.patch.dict(bootstrap.os.environ, {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "0"}):
+                    disabled = bootstrap.mcp_server_config(root)["tonerelay-lightroom"]
+                self.assertEqual(disabled["env"]["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"], "0")
+
+    @unittest.skipUnless(os.name == "nt", "requires a real Windows child process")
+    def test_windows_default_config_reaches_the_process_with_unicode_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "预览 runtime"
+            active = root / "active"
+            venv.EnvBuilder(with_pip=False).create(active / ".venv")
+            module = active / "source/apps/workbench-mcp/workbench_mcp"
+            module.mkdir(parents=True)
+            (module / "__main__.py").write_text(
+                "import json, os\n"
+                "print(json.dumps({key: os.environ.get(key) for key in "
+                "['LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES', 'LR_XMP_MIMIC_RUNTIME_DATA_ROOT', "
+                "'PYTHONPATH']}, ensure_ascii=True))\n", encoding="utf-8")
+            config = bootstrap.mcp_server_config(root)["tonerelay-lightroom"]
+            env = os.environ.copy()
+            env.update(config["env"])
+            process = subprocess.run([config["command"], *config["args"]],
+                                     env=env, capture_output=True, text=True,
+                                     encoding="utf-8", check=True)
+            observed = json.loads(process.stdout)
+            self.assertEqual(observed, config["env"])
+
+    @unittest.skipUnless(os.name == "nt", "requires a real Windows CMD launcher")
+    def test_windows_launcher_preserves_default_and_explicit_zero_with_unicode_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "预览 runtime"
+            active = root / "active"
+            venv.EnvBuilder(with_pip=False).create(active / ".venv")
+            module = active / "source/apps/workbench-mcp/workbench_mcp"
+            module.mkdir(parents=True)
+            (module / "__main__.py").write_text(
+                "import json, os\n"
+                "print(json.dumps({key: os.environ.get(key) for key in "
+                "['LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES', 'LR_XMP_MIMIC_RUNTIME_DATA_ROOT', "
+                "'PYTHONPATH']}, ensure_ascii=True))\n", encoding="utf-8")
+            bootstrap.write_bin_scripts(root)
+            env = os.environ.copy()
+            for opt_in in (None, "0", "1"):
+                with self.subTest(opt_in=opt_in):
+                    env.pop("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", None)
+                    if opt_in is not None:
+                        env["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"] = opt_in
+                    process = subprocess.run(["cmd", "/d", "/c", str(bootstrap.launcher_path(root))],
+                                             env=env, capture_output=True, text=True,
+                                             encoding="utf-8", errors="replace")
+                    self.assertEqual(process.returncode, 0, process.stderr)
+                    observed = json.loads(process.stdout)
+                    self.assertEqual(observed["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"], opt_in)
+                    self.assertEqual(observed["LR_XMP_MIMIC_RUNTIME_DATA_ROOT"], str(root / "data"))
+                    self.assertEqual(observed["PYTHONPATH"], bootstrap.runtime_pythonpath(active / "source"))
+
     def test_windows_install_copies_plugin_instead_of_linking(self):
         with tempfile.TemporaryDirectory() as temporary:
             staging = Path(temporary)
@@ -266,6 +369,27 @@ class ComponentOperationTests(unittest.TestCase):
              mock.patch.object(bootstrap, "status", return_value={"status": "ready"}):
             exit_code = bootstrap.install(runtime_root, source, version)
         self.assertEqual(exit_code, 0)
+
+    def test_windows_default_cli_outputs_client_env_for_install_and_mcp_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"
+            source = self.source_tree(Path(temporary) / "source")
+            with mock.patch.object(bootstrap, "IS_WINDOWS", True), \
+                 mock.patch.object(bootstrap, "create_virtualenv"), \
+                 mock.patch.object(bootstrap, "install_dependencies"), \
+                 mock.patch.object(bootstrap, "start_lr_ops", return_value=True), \
+                 mock.patch.object(bootstrap, "status", return_value={"status": "ready"}):
+                for command in (["install"], ["runtime", "install"], ["mcp", "status"]):
+                    with self.subTest(command=command):
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
+                            exit_code = bootstrap.main([
+                                *command, "--runtime-root", str(root),
+                                "--source-root", str(source), "--version", "v1"])
+                        result = json.loads(output.getvalue())
+                        self.assertEqual(exit_code, 0)
+                        self.assertEqual(result["mcp_server"]["tonerelay-lightroom"]["env"][
+                            "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"], "1")
 
     def test_install_refuses_a_source_that_is_inside_the_runtime_root(self):
         with tempfile.TemporaryDirectory() as temporary:

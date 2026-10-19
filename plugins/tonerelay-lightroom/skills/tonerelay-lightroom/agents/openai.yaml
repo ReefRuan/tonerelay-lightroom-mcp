@@ -1,6 +1,6 @@
 interface:
-  display_name: ToneRelay Lightroom
-  short_description: Start or recover local Lightroom editing.
-  default_prompt: 开始 Lightroom 修图
+  display_name: "ToneRelay Lightroom"
+  short_description: "启动 Lightroom 看图、选片与修图，检查 ToneRelay 接入。"
+  default_prompt: "使用 $tonerelay-lightroom 开始 Lightroom 修图。"
 policy:
   allow_implicit_invocation: true

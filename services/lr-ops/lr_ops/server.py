@@ -37,7 +37,7 @@ the caller now take a handle instead::
 so ``export_preview`` no longer accepts a caller-chosen ``output_dir``: the
 bridge picks it, which is what removes the shared-disk assumption.
 
-When LR_XMP_MIMIC_LOCAL_TOKEN is set, only /health stays anonymous. Job reads,
+When config.json bridge.token (or the unmanaged environment token) is set, only /health stays anonymous. Job reads,
 every POST and DELETE, and file reads all require the X-LR-XMP-Token header,
 including GET /jobs/<id>, the plugin's GET /jobs/next, and
 POST /jobs/<id>/result.
@@ -48,9 +48,9 @@ loopback; the moment the service is bound to a LAN address (so a workbench on
 another machine can drive this Lightroom), an unauthenticated /jobs is a
 remote write channel into the catalog. The same reasoning applies to /files:
 those bytes are the user's photographs. The token is the same one the plugin
-reads from local-token.txt and the workbench reads from the environment.
+reads from local-token.txt and the managed workbench reads from config.json.
 
-When LR_XMP_MIMIC_LOCAL_TOKEN is unset the service stays open, so same-machine
+When no Bridge token is configured the service stays open, so same-machine
 development needs no configuration. Set it deliberately when exposing the port.
 
 File staging lives in :mod:`lr_ops.staging`; this module only routes to it and
@@ -69,10 +69,18 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .staging import BATCH_COMMAND, OUTPUT_COMMANDS, Staging, StagingError
+from .configuration import active_store, runtime_data_root
+from .bridge_lifecycle import bridge_lock, path_fingerprint
+from . import __version__
 
-HOST = os.environ.get("LR_XMP_MIMIC_BRIDGE_HOST") or "127.0.0.1"
-PORT = int(os.environ.get("LR_XMP_MIMIC_BRIDGE_PORT") or 17777)
+from .staging import BATCH_COMMAND, OUTPUT_COMMANDS, Staging, StagingError
+from .sidecar import SIDECAR_COMMANDS, SidecarError, finalize_result, validate_request, writes
+from .native_mask import COMMAND as NATIVE_MASK_COMMAND, validate_request as validate_native_mask, writes as native_mask_writes
+
+_CONFIG = active_store()
+_BRIDGE = _CONFIG.read()["bridge"] if _CONFIG else None
+HOST = _BRIDGE["host"] if _BRIDGE else os.environ.get("LR_XMP_MIMIC_BRIDGE_HOST") or "127.0.0.1"
+PORT = _BRIDGE["port"] if _BRIDGE else int(os.environ.get("LR_XMP_MIMIC_BRIDGE_PORT") or 17777)
 JOB_TIMEOUT_SEC = 120
 # Same ceiling the workbench applies to its own uploads, so a file that the
 # workbench accepted is never rejected here for being too large.
@@ -111,12 +119,7 @@ SOURCE_SHA256 = source_fingerprint(Path(__file__).resolve().parent)
 class QueuePersistenceError(RuntimeError):
     """The queue could not durably record a state transition."""
 
-DATA_ROOT = Path(
-    os.environ.get(
-        "LR_XMP_MIMIC_RUNTIME_DATA_ROOT",
-        Path.home() / "lr-xmp-mimic-runtime-data",
-    )
-)
+DATA_ROOT = runtime_data_root()
 LOG_DIR = DATA_ROOT / "lr-ops"
 STAGING_DIR = LOG_DIR / "staging"
 
@@ -165,7 +168,7 @@ class JobQueue:
                 raise QueuePersistenceError("job journal is corrupt")
             latest[row["job_id"]] = row
         for job in latest.values():
-            if job.get("status") == "dispatched":
+            if job.get("status") in ("dispatched", "finalizing"):
                 job = {**job, "status": "interrupted",
                        "interrupted_at": time.time(),
                        "error": "bridge restarted after dispatch; result unknown"}
@@ -185,6 +188,14 @@ class JobQueue:
             "result": None,
         }
         with self._lock:
+            if ((command in SIDECAR_COMMANDS and writes(command, params))
+                    or (command == NATIVE_MASK_COMMAND and native_mask_writes(params))):
+                for previous in self._jobs.values():
+                    if (previous["command"] in (*SIDECAR_COMMANDS, NATIVE_MASK_COMMAND)
+                            and previous["params"].get("request_id") == params.get("request_id")):
+                        if previous["command"] != command or previous["params"] != params:
+                            raise ValueError("Sidecar/native mask request_id was reused with different arguments")
+                        return previous["job_id"]
             self._append_log(job)
             self._jobs[job_id] = job
             self._order.append(job_id)
@@ -223,11 +234,19 @@ class JobQueue:
                 "params": dispatched["params"],
             }
 
-    def complete(self, job_id: str, payload: dict) -> bool:
+    def complete(self, job_id: str, payload: dict, finalize=None) -> bool:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None or job["status"] != "dispatched":
                 return False
+            if finalize is not None:
+                # Persist before filesystem side effects. A crash here recovers
+                # as interrupted, never dispatched/replayed. The same lock
+                # prevents duplicate HTTP results from repeating the write.
+                job = {**job, "status": "finalizing"}
+                self._append_log(job)
+                self._jobs[job_id] = job
+                payload = finalize(job, payload)
             snapshot = {**job,
                         "status": "done" if payload.get("ok") else "failed",
                         "result": payload,
@@ -315,7 +334,7 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
                 host: str = HOST, staging: Staging | None = None) -> ThreadingHTTPServer:
     queue = queue or JobQueue()
     staging = staging or Staging(STAGING_DIR)
-    token = os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN") or None
+    token = _BRIDGE["token"] if _BRIDGE else os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN") or None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "lr-ops/0.1"
@@ -390,7 +409,15 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
         def do_GET(self):
             if self.path == "/health":
                 self._send(200, {"ok": True, "queued": queue.queued_count(),
-                                 "version": "0.1.0", "source_sha256": SOURCE_SHA256})
+                                 "version": __version__, "source_sha256": SOURCE_SHA256,
+                                 "data_root_sha256": path_fingerprint(DATA_ROOT),
+                                 "credential_configured": bool(token)})
+                return
+            if self.path == "/bridge/identity":
+                if not self._authorized():
+                    self._send(403, {"error": "bad token"})
+                    return
+                self._send(200, {"ok": True})
                 return
             parts = self.path.split("?")[0].strip("/").split("/")
             if parts[0] == "files":
@@ -539,6 +566,21 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
                     if problem:
                         self._send(400, {"error": problem})
                         return
+                    if any(entry["command"] in (*SIDECAR_COMMANDS, NATIVE_MASK_COMMAND) for entry in params["commands"]):
+                        self._send(400, {"error": "Sidecar commands are standalone operations, not batch entries"})
+                        return
+                if command in SIDECAR_COMMANDS:
+                    try:
+                        validate_request(command, params)
+                    except SidecarError as exc:
+                        self._send(400, {"error": exc.code})
+                        return
+                if command == NATIVE_MASK_COMMAND:
+                    try:
+                        validate_native_mask(params)
+                    except ValueError as exc:
+                        self._send(400, {"error": str(exc)})
+                        return
                 # Reclaim abandoned staging here: submitting a job is the one
                 # moment we know a caller is active. Bytes are only ever
                 # collected by an explicit GET, so nothing else would ever
@@ -553,6 +595,9 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
                     job_id = queue.submit(command, params, group=group)
                 except QueuePersistenceError:
                     self._send(503, {"error": "job persistence unavailable"})
+                    return
+                except ValueError as exc:
+                    self._send(409, {"error": str(exc)})
                     return
                 self._send(200, {"job_id": job_id})
                 return
@@ -597,7 +642,12 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
                     except StagingError as exc:
                         body = {"ok": False, "error": str(exc)}
                 try:
-                    completable = queue.complete(job_id, body)
+                    finalizer = None
+                    if job is not None and job.get("command") in SIDECAR_COMMANDS:
+                        finalizer = lambda record, result: finalize_result(
+                            record["command"], record["params"], result,
+                            queue._log_dir / "sidecar-backups", job_id)
+                    completable = queue.complete(job_id, body, finalize=finalizer)
                 except QueuePersistenceError:
                     self._send(503, {"error": "job persistence unavailable"})
                     return
@@ -615,15 +665,22 @@ def make_server(queue: JobQueue | None = None, port: int = PORT,
 
 
 def run(port: int = PORT, host: str = HOST):
+    # One queue owner per data root, including manually deployed services on
+    # different ports. Acquire before loading/recovering the journal.
+    with bridge_lock(LOG_DIR / ".owner.lock", timeout=0):
+        _serve(port, host)
+
+
+def _serve(port: int, host: str):
     server = make_server(port=port, host=host)
     print(f"lr-ops listening on http://{host}:{port} (Ctrl+C to stop)")
     if host not in ("127.0.0.1", "localhost"):
-        if os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN"):
-            print("  token required (LR_XMP_MIMIC_LOCAL_TOKEN is set)")
+        if (_BRIDGE["token"] if _BRIDGE else os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN")):
+            print("  configured token required")
         else:
             print("  WARNING: bound to a non-loopback address with NO token set.")
             print("           Anyone who can reach this port can drive Lightroom.")
-            print("           Set LR_XMP_MIMIC_LOCAL_TOKEN before exposing it.")
+            print("           Configure a Bridge token before exposing it.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

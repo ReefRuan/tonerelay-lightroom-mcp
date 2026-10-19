@@ -1,6 +1,7 @@
 -- Phase 2 bridge commands. Every command takes the job params table and
 -- returns a result table (or raises via error()). Bridge.lua authorizes every
--- job through Safety before dispatch; write commands never touch master photos.
+-- job through Safety before dispatch. Develop writes use virtual copies;
+-- explicit photo-mark commands organize the named photo's metadata only.
 local LrApplication = import 'LrApplication'
 local LrApplicationView = import 'LrApplicationView'
 local LrExportSession = import 'LrExportSession'
@@ -12,10 +13,23 @@ local Safety = require 'Safety'
 local Catalog = require 'Catalog'
 local Json = require 'Json'
 local Presets = require 'Presets'
+local PhotoMarks = require 'PhotoMarks'
 local State = require 'State'
 local Util = require 'Util'
+local UiContext = require 'UiContext'
+local ExportResult = require 'ExportResult'
+local Sidecar = require 'Sidecar'
+local NativeMasks = require 'NativeMasks'
+local PluginVersion = (require 'Info').VERSION
+local PLUGIN_VERSION = string.format('%d.%d.%d', PluginVersion.major, PluginVersion.minor, PluginVersion.revision)
 
 local Commands = {}
+
+Commands.get_photo_marks = PhotoMarks.get
+Commands.set_photo_marks = PhotoMarks.set
+Commands.restore_photo_marks = PhotoMarks.restore
+Commands.update_xmp_sidecar = Sidecar.prepare
+Commands.apply_mask = Sidecar.prepare
 
 -- Develop settings exposed to the runtime. Anything outside this whitelist
 -- is never written by the bridge.
@@ -164,8 +178,8 @@ function Commands.probe_client(_)
     if type(catalogPath) ~= 'string' or catalogPath == '' then
         return {
             lr_version = LrApplication.versionString(),
-            plugin_version = '0.4.0',
-            build_id = 'bridge-generation-20261006-1',
+            plugin_version = PLUGIN_VERSION,
+            build_id = 'poll-lifecycle-0.6.2-3',
             catalog_open = false,
             access_mode = Safety.getAccessMode(),
             catalog_authorized = false,
@@ -179,15 +193,17 @@ function Commands.probe_client(_)
     local policy = Safety.catalogPolicy(catalogPath)
     return {
         lr_version = LrApplication.versionString(),
-        plugin_version = '0.4.0',
-        build_id = 'bridge-generation-20261006-1',
+        plugin_version = PLUGIN_VERSION,
+        build_id = 'poll-lifecycle-0.6.2-3',
         catalog_open = true,
         capabilities = { expected_catalog_identity = true, expected_access_mode = true,
             catalog_identity = true, develop_snapshot = true,
             develop_presets_read = true, hsl = true, white_balance = true, curves = true,
-            catalog_search = true, current_folder_selection = true,
+            catalog_search = true, current_folder_selection = true, photo_marks_v1 = true,
+            sidecar_context_v1 = true,
             preview_fast_request_jpeg_thumbnail = true,
             preview_fast_thumbnail_unavailable_code = true,
+            ui_context_restore_v1 = true,
             passthrough_settings = true, split_toning = true, color_grade = true,
             post_crop_vignette = true, local_masks = true },
         access_mode = policy.access_mode,
@@ -493,82 +509,153 @@ function Commands.get_develop_snapshot(params)
     return { photo = photoInfo(photo), settings = photo:getDevelopSettings() or {} }
 end
 
--- createVirtualCopies is a UI-selection API.  Lightroom only exposes a
--- reliable selection when the photo belongs to the active source, and older
--- SDKs are particularly fragile outside the Library module.  Establish the
--- smallest deterministic UI state before invoking it.  The feature checks
--- keep the seam usable by the lightweight Lua test double.
-local function prepareVirtualCopySelection(photo)
+-- createVirtualCopies uses the selection. Keep the current source/module
+-- whenever the source photo belongs there; only cross-source requests need
+-- a temporary source change. Never clear filters or force the Library module.
+local function prepareVirtualCopySelection(photo, context)
+    local function guard()
+        if context and not UiContext.catalogMatches(context) then
+            error('Catalog changed while preparing virtual-copy selection.')
+        end
+        if context and not UiContext.owns(context) then
+            error('UI context changed while preparing virtual-copy selection.')
+        end
+    end
+    guard()
     local activeCatalog = catalog()
-    if activeCatalog.setActiveSources and activeCatalog.kAllPhotos then
-        local sourceResult = activeCatalog:setActiveSources(activeCatalog.kAllPhotos)
-        if sourceResult == false then
-            error('Unable to activate All Photographs before virtual-copy creation.')
+    local target = activeCatalog:getTargetPhoto()
+    local selected = target and activeCatalog:getTargetPhotos() or {}
+    if target == photo and #selected == 1 and selected[1] == photo then return end
+    local function contains(photos)
+        for _, item in ipairs(photos or {}) do if item == photo then return true end end
+        return false
+    end
+    local present = contains(selected)
+    -- Multiple selection makes this API return only the selection. In that
+    -- case inspect active-source membership without deselecting the user.
+    if not present and #selected <= 1 and activeCatalog.getMultipleSelectedOrAllPhotos then
+        local ok, photos = LrTasks.pcall(function() return activeCatalog:getMultipleSelectedOrAllPhotos() end)
+        present = ok and type(photos) == 'table' and contains(photos)
+    end
+    local sources, known = {}, false
+    if not present and activeCatalog.getActiveSources then
+        local ok, current = LrTasks.pcall(function() return activeCatalog:getActiveSources() end)
+        if ok and type(current) == 'table' and #current > 0 then
+            sources, known = current, true
+            for _, item in ipairs(sources) do
+                if item == activeCatalog.kAllPhotos then
+                    present = true
+                elseif (type(item) == 'table' or type(item) == 'userdata') and item.getPhotos then
+                    local readOk, photos = LrTasks.pcall(function() return item:getPhotos(true) end)
+                    if not readOk or type(photos) ~= 'table' then known = false
+                    elseif contains(photos) then present = true end
+                else known = false end
+            end
         end
-        LrTasks.sleep(0.2)
     end
-    if LrApplicationView.getCurrentModuleName and LrApplicationView.switchToModule then
-        local moduleName = LrApplicationView.getCurrentModuleName()
-        if moduleName ~= 'library' then
-            LrApplicationView.switchToModule('library')
-            LrTasks.sleep(0.2)
+    guard()
+    if not present then
+        if not known or (context and not context.sources) then
+            error('source_membership_unavailable: cannot safely switch and restore the active source.')
         end
+        local destination = activeCatalog.kAllPhotos
+        if not destination then destination = { selectedFolder(activeCatalog, photo) } end
+        guard()
+        if context then context.expected_sources = type(destination) == 'table' and destination or { destination } end
+        if activeCatalog:setActiveSources(destination) == false then
+            error('Unable to activate a source containing the requested photo.')
+        end
+        if context then UiContext.noteSelection(context) end
+        LrTasks.sleep(0.05)
+        guard()
     end
-    activeCatalog:setSelectedPhotos(photo, {})
-    LrTasks.sleep(0.2)
-    if activeCatalog.getTargetPhoto and activeCatalog:getTargetPhoto() ~= photo then
-        error('Lightroom did not select the requested source photo.')
+    if context then context.allowed_targets[#context.allowed_targets + 1] = photo end
+    -- Selection can be ignored while a source is settling. Retry only this
+    -- UI setter, guarded after every yield, never virtual-copy creation.
+    for attempt = 1, 10 do
+        guard()
+        activeCatalog:setSelectedPhotos(photo, {})
+        if context then UiContext.noteSelection(context) end
+        guard()
+        local verified = activeCatalog:getTargetPhotos()
+        if activeCatalog:getTargetPhoto() == photo and #verified == 1 and verified[1] == photo then return end
+        if attempt < 10 then LrTasks.sleep(0.05) end
     end
+    error('Lightroom did not select the requested source photo; filters were not changed.')
 end
 
 function Commands.select_photo(params)
     local photo = findPhoto(params.photo_uuid)
+    if params.preserve_ui_context ~= nil and type(params.preserve_ui_context) ~= 'boolean' then
+        error('preserve_ui_context must be a boolean.')
+    end
+    if params.preserve_ui_context then
+        -- Reuse the exact preparation/restoration path without a Catalog write.
+        -- This also allows acceptance after the one authorized copy is created.
+        local context = UiContext.capture(catalog())
+        local ok, info = LrTasks.pcall(function()
+            prepareVirtualCopySelection(photo, context)
+            return photoInfo(photo)
+        end)
+        local restored, report = LrTasks.pcall(function() return UiContext.restore(context) end)
+        if not restored then report = UiContext.unavailable('restore_failed') end
+        if not ok then error('select_photo: ' .. tostring(info) .. '; ui_context=' .. Json.encode(report)) end
+        return { photo = info, ui_context = report }
+    end
     prepareVirtualCopySelection(photo)
     return { photo = photoInfo(photo) }
 end
 
 function Commands.create_virtual_copy(params)
     local source = findPhoto(params.photo_uuid)
-    if source:getRawMetadata('isVirtualCopy') then
-        error('create_virtual_copy expects a master photo, not a virtual copy.')
-    end
     local name = params.name or 'ToneRelay candidate'
+    local context = UiContext.capture(catalog())
     local copy
-    local ok, failure = LrTasks.pcall(function()
-        prepareVirtualCopySelection(source)
-    end)
-    if not ok then
-        error('create_virtual_copy phase=select_source: ' .. tostring(failure))
-    end
+    local sourceInfo, copyInfo
     -- The SDK documents createVirtualCopies as an asynchronous-task API, not
     -- a catalog write-gate API.  Calling it inside withWriteAccessDo makes LR
     -- 15.4.1 fail internally ("attempt to index a boolean value").
     local copies
-    local phase = 'create_copies'
-    ok, failure = LrTasks.pcall(function()
-        copies = catalog():createVirtualCopies(name)
-        phase = 'after_create'
-    end)
-    if not ok then
-        error('create_virtual_copy phase=' .. phase .. ': ' .. tostring(failure)
-            .. ' (type(copies)=' .. type(copies) .. ')')
-    end
-    ok, failure = LrTasks.pcall(function()
+    local phase = 'select_source'
+    local ok, failure = LrTasks.pcall(function()
+        prepareVirtualCopySelection(source, context)
+        if not UiContext.catalogMatches(context) then error('Catalog changed before virtual-copy creation.') end
+        phase = 'create_copies'
+        copies = context.catalog:createVirtualCopies(name)
+        phase = 'read_copy_info'
         if type(copies) ~= 'table' or #copies ~= 1 then
             error('Expected exactly one virtual copy, got ' .. tostring(copies) .. '.')
         end
         copy = copies[1]
-        if copy:getRawMetadata('masterPhoto') ~= source then
+        context.allowed_targets[#context.allowed_targets + 1] = copy
+        -- A copy of a master points at the master; a copy of a virtual copy
+        -- also points at the master (LR does not chain virtual copies), so
+        -- accept either relationship.
+        local copyMaster = copy:getRawMetadata('masterPhoto')
+        local sourceMaster = source
+        if source:getRawMetadata('isVirtualCopy') then
+            sourceMaster = source:getRawMetadata('masterPhoto')
+        end
+        if copyMaster ~= source and copyMaster ~= sourceMaster then
             error('Virtual-copy verification failed: master mismatch.')
         end
+        sourceInfo, copyInfo = photoInfo(source), photoInfo(copy)
     end)
+    local restored, uiContext = LrTasks.pcall(function() return UiContext.restore(context) end)
+    if not restored then uiContext = UiContext.unavailable('restore_failed') end
     if not ok then
-        error('create_virtual_copy phase=read_copy_info: ' .. tostring(failure))
+        error('create_virtual_copy phase=' .. phase .. ': ' .. tostring(failure)
+            .. ' (type(copies)=' .. type(copies) .. '; ui_context=' .. Json.encode(uiContext) .. ')')
     end
     return {
-        source = photoInfo(source),
-        copy = photoInfo(copy),
+        source = sourceInfo,
+        copy = copyInfo,
+        ui_context = uiContext,
     }
+end
+
+function Commands.native_mask(params)
+    return NativeMasks.run(params, prepareVirtualCopySelection)
 end
 
 local function applyCandidateCore(params)
@@ -616,7 +703,16 @@ local function applyCandidateCore(params)
     end
 
     local before = normalizedSettings(photo)
-    local preset = LrApplication.addDevelopPresetForPlugin(_PLUGIN, 'ToneRelay candidate', clean)
+    -- Lightroom can reset omitted preset fields (notably RAW white balance).
+    -- Build a complete develop baseline, then overlay only the validated patch.
+    local presetSettings = {}
+    for key, value in pairs(photo:getDevelopSettings() or {}) do
+        if not Commands.DENY_SETTINGS[key] or key == 'ToneCurveName2012' or key == 'ToneCurveName' then
+            presetSettings[key] = value
+        end
+    end
+    for key, value in pairs(clean) do presetSettings[key] = value end
+    local preset = LrApplication.addDevelopPresetForPlugin(_PLUGIN, 'ToneRelay candidate', presetSettings)
     photo:applyDevelopPreset(preset, _PLUGIN)
     -- applyDevelopPreset 是异步的，而且本函数可能跑在（solo 或 batch 的）写闸门里：
     -- 闸门内回读永远看不到本次写入，必须等闸门提交后再轮询（见 settleReadback）。
@@ -711,20 +807,14 @@ end
 
 function Commands.export_preview(params)
     local photo = findPhoto(params.photo_uuid)
-    local longEdge = tonumber(params.long_edge) or 2048
+    -- long_edge 0 / 负数 / 缺省 = 全尺寸导出（不做尺寸约束）。
+    local longEdge = tonumber(params.long_edge) or 0
+    local constrain = longEdge > 0
     local exportDir = params.output_dir
     if type(exportDir) ~= 'string' or exportDir == '' then
         error('export_preview requires output_dir (managed by the lr-ops service).')
     end
     LrFileUtils.createAllDirectories(exportDir)
-    -- Lightroom names the export after the photo's own filename, not our id.
-    local fileName = photo:getFormattedMetadata('fileName') or params.photo_uuid
-    local stem = string.gsub(fileName, '%.[^.]+$', '')
-    local outputPath = LrPathUtils.child(exportDir, stem .. '.jpg')
-    if LrFileUtils.exists(outputPath) then
-        LrFileUtils.delete(outputPath)
-    end
-
     local exportSession = LrExportSession {
         photosToExport = { photo },
         exportSettings = {
@@ -741,18 +831,14 @@ function Commands.export_preview(params)
             LR_outputSharpeningOn = false,
             LR_reimportExportedPhoto = false,
             LR_renamingTokensOn = false,
-            LR_size_doConstrain = true,
-            LR_size_maxHeight = longEdge,
+            LR_size_doConstrain = constrain,
+            LR_size_maxHeight = math.max(longEdge, 1),
             LR_size_resizeType = 'longEdge',
             LR_size_units = 'pixels',
             LR_useWatermark = false,
         },
     }
-    exportSession:doExportOnCurrentTask()
-
-    if not LrFileUtils.exists(outputPath) then
-        error('Export finished but the expected file is missing: ' .. outputPath)
-    end
+    local outputPath = ExportResult.render(exportSession, photo, exportDir)
     return {
         photo = photoInfo(photo),
         output_path = outputPath,

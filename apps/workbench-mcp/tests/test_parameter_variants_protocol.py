@@ -56,7 +56,8 @@ class ParameterVariantProtocolTests(unittest.TestCase):
 
     def source_only_episode(self):
         return self.call("create_episode", source_uuid="source",
-                         mode="source_edit", intent="参数变体协议", long_edge=256)
+                         mode="source_edit", intent="参数变体协议", long_edge=256,
+                         include_snapshots=True)
 
     def test_parameter_reference_is_the_standalone_parameter_documentation(self):
         names = [tool["name"] for tool in TOOLS]
@@ -166,6 +167,7 @@ class ParameterVariantProtocolTests(unittest.TestCase):
             base_revision=state["revision"], request_id=str(uuid.uuid4()),
             parameter="Exposure2012", values=[0.4])
         state = self.wait_ready(state["id"])
+        self.assertEqual(state["status"], "ready", state.get("error"))
 
         raw = self.wb.studio.raw(state["id"])
         version = raw["versions"][1]

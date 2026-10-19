@@ -243,6 +243,7 @@ _G.import = function(name)
   elseif name == 'LrDevelopController' then
     return {}
   end
+  if name == 'LrSelection' then return {} end
   error('unexpected import ' .. name)
 end
 _G._PLUGIN = {}
@@ -552,7 +553,7 @@ end)
 test('probe advertises Catalog search and keeps every previous capability', function()
   usePhotos(defaultPhotos())
   local probe = Commands.probe_client({})
-  check(probe.build_id == 'bridge-generation-20261006-1',
+  check(probe.build_id == 'poll-lifecycle-0.6.2-3',
     'build_id: ' .. tostring(probe.build_id))
   check(probe.capabilities.catalog_search == true, 'catalog_search capability')
   check(probe.capabilities.expected_catalog_path == nil, 'path binding capability is retired')
@@ -570,7 +571,10 @@ test('probe advertises Catalog search and keeps every previous capability', func
   check(probe.catalog_path == nil and probe.catalog_id == 'sandbox.lrcat'
     and probe.catalog_identity == Safety.catalogIdentity(sandboxCatalogPath)
     and probe.access_mode == 'full' and probe.sandbox == false, 'catalog and access probe fields')
-  check(probe.plugin_version == '0.4.0' and probe.lr_version == '15.4.1', 'version fields preserved')
+  local v = (require 'Info').VERSION
+  check(probe.plugin_version == string.format('%d.%d.%d', v.major, v.minor, v.revision)
+    and probe.lr_version == '15.4.1', 'version fields preserved')
+  check(probe.capabilities.ui_context_restore_v1 == true, 'UI-context restoration capability')
 end)
 
 test('list_photos keeps its original ungated read-only shape', function()

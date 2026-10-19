@@ -1,9 +1,20 @@
 # 失败与恢复
 
-- `trlr_health` 显示桥不可达或 `catalog_policy.authorized=false` 时停止 Lightroom 操作。`catalog_confirmation_required` 按安全规则完成首次绑定；`catalog_not_open` 时确认 Lightroom 状态；`unsupported_plugin_contract` 时按 bootstrap 诊断加载兼容插件；若 `trlr_confirm_catalog` 不可见且 bootstrap 返回 `bootstrap.runtime_upgrade_required`，升级 Runtime 后刷新 MCP。`access_mode_mismatch` / `catalog_identity_mismatch` 不得自动改模式或静默覆盖绑定：只有用户明确要求改用另一个 Catalog，才列出本机可切换项、提示切换影响、等待同意后用 `trlr_switch_catalog`；用户只要求修复且 Catalog 已活动时才用 `trlr_confirm_catalog`。切换超时或未观察到目标 identity 时，现有绑定保持不变。`safe_sandbox_not_registered` / `safe_catalog_mismatch` 时停止写入；用户须在 Plugin Manager 登记目标 Sandbox。不得在工具参数中绕过或提升模式。
-- `probe_failed` 或 bootstrap 的 `bootstrap.plugin_probe_unavailable` 只说明未取得可用的 Lightroom probe，当前插件 build 与 Catalog 授权仍未知。先区分 Bridge 健康与 Lightroom 响应，检查已观察的锁屏、应用可用性和作业状态；必要时请用户解锁，再做只读复验。不能从超时推断插件未注册或版本过旧，也不能据此重复注册、重绑 Catalog 或重启有未知作业的应用。配置与教程查询仍可读取，不把它们称为恢复了照片操作。
-- revision 冲突时重新调用 `trlr_get_episode`，基于最新状态重新决定；不得只替换 revision 后盲目重放旧计划。
-- 超时、掉线或进程中断可能形成未知写入结果。先查询 Episode、问题日志和 Lightroom 实际状态；未知写入结果不得自动重放会创建副本或写 Catalog 的动作。
-- 工具返回错误时保留原始错误和调用上下文。需要查看自动记录的问题时用 `trlr_list_issues`；只有额外的人工观察才用 `trlr_report_issue`。
-- 停止参数变体渲染只表示请求在当前候选之后停止；读取最终 Episode 状态后才能说明保留了什么。
-- 无法证明的能力返回“不支持”或“未验证”，不要静默降级成修改原片、控制 UI 或伪造成功。
+先报告已确认的阻塞、已完成的工作和一个具体下一步；区分客户端 MCP 连接、Bridge 可达性、Lightroom probe、Catalog 授权，不把任一层成功称为整条链路就绪。
+
+| 观察到的状态 | 处理 |
+|---|---|
+| 用户要求刷新 MCP，连接仍可用且有 trlr_refresh_mcp | 调用该工具 inspect 或 refresh，依据实际版本/指纹和结果核验；使用返回的当前 Runtime 规则，重新发现工具。刷新不关闭 Bridge/Lightroom，不重放作业；失败旧 worker 保留。客户端忽略列表通知、缓存未更新或缺少该工具时，从官方入口重连，不声称通知已经刷新了客户端。 |
+| MCP 工具缺失、客户端报告连接断开或仍加载旧 schema | 提示通过客户端官方入口刷新/重连 MCP；必要时再建新会话核对实际工具与初始化规则。独立诊断进程不会连接当前对话，新会话也不保证重启 Server 或修复 Bridge/Lightroom。 |
+| Bridge 不可达 | 停止实时照片操作，区分默认 external 尚未启动服务与 builtin 预检失败。沿用已授权的启动或修复范围，通过已知安装维护入口检查并启动本机 Bridge；远端服务交其主机维护者。工具已挂载时，Bridge 或 Lightroom 就绪后只读复验，不要求无故重启客户端；客户端已放弃工具挂载时用官方重连。UI 核验仍遵守已有 Target/Catalog 范围，不绕过授权、不重放未知写入。 |
+| `probe_failed` / `bootstrap.plugin_probe_unavailable` | 只表示没有可用 probe，插件 build、活动身份和授权仍未知。检查已知锁屏、Lightroom 界面可用性与作业状态；不能据此判断未安装、注册陈旧或需要重绑。 |
+| `catalog_not_open` | 按已授权启动/恢复规则观察应用与目标 Catalog；确认目标可用后只读复验，仍无法确认时请用户说明，不猜目标或静默切换。 |
+| Catalog 未绑定、模式/身份不匹配或 Sandbox 阻塞 | 按“安全不变量”的对应流程处理；不通过改模式、静默重绑或跳过授权恢复。 |
+| `unsupported_plugin_contract`，或缺少 `trlr_confirm_catalog` 且诊断为 `bootstrap.runtime_upgrade_required` | 报告明确的兼容性证据，按已授权安装/升级流程处理，之后重新连接并核对实际版本与授权。 |
+
+普通配置或连接验证首次确认探针失败后，先交付已读到的配置/教程，标明未知项；不要重复失败探针、遍历目录或启动直连脚本来延迟答复。用户确认解锁、应用就绪、连接已刷新，或 Agent 在已授权 Computer Use 后备任务中实际观察到相应状态变化后，才做一次只读复验；同样失败且没有新证据就停止。该观察不能自动放行 Catalog、客户端权限或安全批准，也不授权重试未知写入。用户明确要求深入诊断时在其范围内调查，保留已知阻塞，不循环重启应用或新建会话。存在未知作业时不重启 Lightroom/Bridge。
+
+- **revision 冲突**：重新 `trlr_get_episode`，结合最新状态重新决定，不只替换 revision 重放旧计划。
+- **未知写入结果**：未知写入结果不得自动重放。超时不等于取消；尚未领取的 queued 作业可能在 Lightroom 晚启动后执行，已领取作业在 Bridge 重启后为 interrupted，不能重放。先查原 Episode、作业和问题日志；结果未厘清时停止后续冲突写入，报告无法确认的动作，不把超时报成“尚未发生”。
+- **错误与停止**：保留原始错误和调用上下文，自动记录的问题用 `trlr_list_issues` 查看，只有额外人工观察才用 `trlr_report_issue`。`trlr_stop_episode` 表示请求在当前候选完成后停止，读最终状态后再说明保留了哪些版本。
+- **能力不足**：按事实说“不支持”或“未验证”，不以修改原片、未经授权的 UI 控制或伪造成功补齐。

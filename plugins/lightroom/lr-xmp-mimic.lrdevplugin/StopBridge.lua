@@ -4,4 +4,4 @@ local LrDialogs = import 'LrDialogs'
 local Bridge = require 'Bridge'
 
 Bridge.stop()
-LrDialogs.showBezel('Bridge stopped.')
+LrDialogs.showBezel('Lightroom polling stopped.')

@@ -31,14 +31,28 @@ class BootstrapSafetyTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def install(self, root=None):
+        if os.name != "posix":
+            self.skipTest("macOS installation fixture requires POSIX ledger locking")
         root = root or self.root / "runtime"
-        source = bootstrap_tests.BootstrapInstallTests().source_tree(self.root / "source", "test-build")
+        source = self.root / "source/verified-source"
+        if not source.is_dir():
+            source = bootstrap_tests.BootstrapInstallTests().source_tree(self.root / "source", "test-build")
         with mock.patch.object(bootstrap, "create_virtualenv"), \
              mock.patch.object(bootstrap, "install_dependencies"), \
              mock.patch.object(bootstrap, "start_lr_ops", return_value=True), \
              mock.patch.object(bootstrap, "status", return_value={"status": "repair_needed"}):
             code, _ = bootstrap_tests.BootstrapInstallTests().run_install(root, source, "v1")
         self.assertEqual(code, 0)
+        # These historical safety cases exercise a pre-config.json installation;
+        # unified launchers and paths have their own real-process tests.
+        (root / "config.json").unlink()
+        ledger = bootstrap.lifecycle().Ledger(root)
+        ledger.record.pop("configuration", None)
+        ledger.record.pop("selected_data_root", None)
+        ledger.save()
+        bootstrap.write_bin_scripts(root)
+        ledger = bootstrap.lifecycle().Ledger(root)
+        ledger.checkpoint("runtime_installed", bootstrap.data_root(root))
         return root
 
     def emit_result(self, function, *args):
@@ -79,7 +93,7 @@ class BootstrapSafetyTests(unittest.TestCase):
         self.assertEqual(bootstrap.data_root(root), legacy)
         self.assertTrue((legacy / "episode.json").exists())
         other = root / "data"
-        other.mkdir(); (other / "new.json").write_text("new")
+        other.mkdir(exist_ok=True); (other / "new.json").write_text("new")
         self.assertEqual(bootstrap.data_root(root), legacy)
         version = bootstrap.active_root(root)
         self.assertEqual(bootstrap.runtime_env(version)["LR_XMP_MIMIC_RUNTIME_DATA_ROOT"], str(legacy))
@@ -97,9 +111,11 @@ class BootstrapSafetyTests(unittest.TestCase):
             bootstrap.write_bin_scripts(root)
         self.assertEqual(bootstrap.data_root(root), explicit)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX installation ledger and file locking")
     def test_invalid_saved_selection_is_not_silently_reset(self):
         root = self.root / "runtime"
         root.mkdir()
+        bootstrap.lifecycle().Ledger(root, create=True)
         (root / "data-selection.json").write_text('{"data_root":"relative"}')
         with self.assertRaises(bootstrap.InstallError):
             bootstrap.data_root(root)
@@ -107,19 +123,17 @@ class BootstrapSafetyTests(unittest.TestCase):
     def test_uninstall_preserves_local_data_and_refuses_data_inside_versions(self):
         root = self.install()
         data = root / "data"
-        data.mkdir(); (data / "targets.json").write_text("keep")
+        data.mkdir(exist_ok=True); (data / "targets.json").write_text("keep")
         code, result = self.emit_result(bootstrap.runtime_uninstall, root, "all")
         self.assertEqual(code, 0)
         self.assertTrue((data / "targets.json").exists())
-        # Reinstall from the same verified source after removing runtime files.
-        with mock.patch.object(bootstrap, "create_virtualenv"), mock.patch.object(bootstrap, "install_dependencies"), \
-             mock.patch.object(bootstrap, "start_lr_ops", return_value=True), mock.patch.object(bootstrap, "status", return_value={}):
-            bootstrap_tests.BootstrapInstallTests().run_install(root, self.root / "source/verified-source", "v2")
-        inside = root / "versions/v2/data"
+        # A legacy layout with selected data in a version must refuse removal.
+        root = self.install(self.root / "second-legacy-runtime")
+        inside = root / "versions/v1/data"
         with mock.patch.dict(os.environ, {"LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(inside)}):
             code, _ = self.emit_result(bootstrap.runtime_uninstall, root, "all")
         self.assertEqual(code, 1)
-        self.assertTrue((root / "versions/v2").exists())
+        self.assertTrue((root / "versions/v1").exists())
         self.assertTrue(bootstrap.link_present(root / "active"))
 
     def test_uninstall_refuses_unmanaged_directory_and_system_root(self):
@@ -151,7 +165,7 @@ class BootstrapSafetyTests(unittest.TestCase):
     def test_legacy_live_pid_refuses_termination(self):
         root = self.install()
         path = bootstrap.bridge_pid_path(root)
-        path.parent.mkdir(); path.write_text(str(os.getpid()))
+        path.parent.mkdir(exist_ok=True); path.write_text(str(os.getpid()))
         with mock.patch.object(bootstrap, "terminate_process") as terminate:
             code, result = self.emit_result(bootstrap.bridge_stop, root)
         self.assertEqual(code, 2)

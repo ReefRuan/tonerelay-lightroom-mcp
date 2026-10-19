@@ -20,14 +20,16 @@ import os
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest import mock
 
 from PIL import Image
 
-from workbench.folders import (CONFIG_ENV, DEFAULT_EXTENSIONS, DIRECT_EXTENSIONS,
+from lr_ops.configuration import defaults, validate
+
+from workbench.folders import ( DEFAULT_EXTENSIONS, DIRECT_EXTENSIONS,
                                FolderConflict, FolderError, FolderLibrary,
-                               FolderNotFound, _parse_config_text, file_key_for,
+                               FolderNotFound, file_key_for,
                                image_header_facts, normalize_extensions, root_key_for)
 
 
@@ -100,21 +102,19 @@ class FolderTestCase(unittest.TestCase):
 
     # ---- fixture helpers ---------------------------------------------------
 
-    def use_config(self, *, name="folder-library.json", **overrides):
-        payload = {
-            "roots": [str(self.photos)],
-            "extensions": list(DEFAULT_EXTENSIONS),
-            "recursive": False,
+    def use_config(self, **overrides):
+        data = defaults()
+        data["folders"] = {
+            "mode": "restricted", "roots": [str(self.photos)],
+            "extensions": list(DEFAULT_EXTENSIONS), "recursive": False,
         }
-        payload.update(overrides)
-        (self.data / name).write_text(json.dumps(payload, ensure_ascii=False),
-                                      encoding="utf-8")
-        return self.data / name
+        data["folders"].update(overrides)
+        path = self.data / "config.json"
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return path
 
     def clear_config(self):
-        for name in ("folder-library.json", "folder-library.yaml",
-                     "folder-library.yml", "folder-roots.json"):
-            (self.data / name).unlink(missing_ok=True)
+        (self.data / "config.json").unlink(missing_ok=True)
 
     def put(self, name, content=JPEG_BYTES, directory=None):
         target = (directory or self.photos) / name
@@ -148,18 +148,19 @@ class ConfigTestCase(FolderTestCase):
         self.assertFalse(config.recursive)
         self.assertIsNone(config.error)
         self.assertEqual(self.lib.public_state()["access_mode"], "full")
-        self.assertEqual(self.lib.public_state()["roots"][0]["label"],
-                         "整个 Runtime 主机")
+        for root, entry in zip(config.roots, self.lib.public_state()["roots"]):
+            label = ("整个 Runtime 主机" if len(config.roots) == 1
+                     else f"Runtime 主机磁盘 {Path(root).anchor.strip()}")
+            self.assertEqual(entry["label"], label)
+            self.assertEqual(set(entry), {"key", "label"})
 
     def test_default_full_access_can_scan_a_runtime_host_directory(self):
         self.clear_config()
         photo = self.put("full-access.jpg")
-        root = self.lib.public_state()["roots"][0]
-        if os.name == "nt":
-            drive_root = Path(root["label"].split()[-1] + "\\")
-            relative = photo.relative_to(drive_root).as_posix()
-        else:
-            relative = photo.relative_to(Path("/")).as_posix()
+        host_root = Path(photo.anchor)
+        root = next(entry for entry in self.lib.public_state()["roots"]
+                    if entry["key"] == root_key_for(host_root))
+        relative = photo.relative_to(host_root).as_posix()
         result = self.lib.scan(root=root["key"], rel=relative.rsplit("/", 1)[0])
         self.assertEqual([item["name"] for item in result["files"]], [photo.name])
 
@@ -195,107 +196,83 @@ class ConfigTestCase(FolderTestCase):
         with self.assertRaises(FolderError):
             self.scan()
 
-    def test_absent_extensions_key_still_uses_the_defaults(self):
-        path = self.data / "folder-library.json"
-        path.write_text(json.dumps({"roots": [str(self.photos)], "recursive": False}),
-                        encoding="utf-8")
+    def test_null_extensions_use_the_defaults(self):
+        self.use_config(extensions=None)
         self.assertEqual(self.lib.config().extensions, DEFAULT_EXTENSIONS)
 
     def test_json_config_is_read(self):
         self.use_config()
         config = self.lib.config()
-        self.assertEqual(config.source, "primary")
+        self.assertEqual(config.source, "config")
         self.assertEqual(config.roots, (str(self.photos.resolve()),))
 
-    def test_yaml_config_is_read(self):
-        self.use_config(name="folder-library.yaml")
-        self.assertEqual(self.lib.config().source, "primary")
+    def test_old_yaml_config_does_not_override_json(self):
+        (self.data / "folder-library.yaml").write_text("roots: []\n")
+        self.assertEqual(self.lib.config().source, "config")
+        self.assertEqual(self.lib.config().roots, (str(self.photos.resolve()),))
 
-    def test_documented_yaml_example_shape_parses_without_pyyaml(self):
-        """The built-in subset parser must read exactly the shipped example."""
-        from workbench.folders import _minimal_yaml
-        path = self.base / "example.yaml"
-        path.write_text(
-            "# comment\n"
-            "roots:\n"
-            "  - /var/tmp/tonerelay-fixtures/Pictures\n"
-            "  - /var/tmp/tonerelay-fixtures/Photos\n"
-            "extensions:\n"
-            "  - .jpg\n"
-            "  - .CR3\n"
-            "recursive: false\n",
-            encoding="utf-8")
-        parsed = _minimal_yaml(path.read_text(encoding="utf-8"), path)
-        self.assertEqual(parsed["roots"], ["/var/tmp/tonerelay-fixtures/Pictures", "/var/tmp/tonerelay-fixtures/Photos"])
-        self.assertEqual(parsed["extensions"], [".jpg", ".CR3"])
-        self.assertFalse(parsed["recursive"])
+    def test_shared_config_is_standard_json(self):
+        path = self.use_config(extensions=[".jpg", ".CR3"])
+        parsed = validate(json.loads(path.read_text(encoding="utf-8")), self.data.resolve())
+        self.assertEqual(parsed["folders"]["roots"], [str(self.photos)])
+        self.assertEqual(self.lib.config().extensions, (".jpg", ".cr3"))
 
-    def test_shipped_examples_parse_and_match_the_documented_contract(self):
-        repo = Path(__file__).resolve().parents[1]
-        for name in ("folder-library.example.json", "folder-library.example.yaml"):
-            example = repo / name
-            self.assertTrue(example.is_file(), f"{name} 缺失")
-            parsed = _parse_config_text(example.read_text(encoding="utf-8"), example)
-            self.assertEqual(set(parsed) - {"_comment"},
-                             {"roots", "extensions", "recursive"})
-            self.assertEqual(normalize_extensions(parsed["extensions"]),
-                             DEFAULT_EXTENSIONS)
-            self.assertTrue(all(entry.startswith("/") for entry in parsed["roots"]))
-            self.assertIs(parsed["recursive"], False)
+    def test_shipped_config_example_has_the_complete_schema(self):
+        example = Path(__file__).resolve().parents[1] / "config.example.json"
+        document = json.loads(example.read_text())
+        # The illustrative POSIX input root is replaced by the operator on
+        # Windows; validate the whole schema with a real native absolute root.
+        self.assertTrue(document["folders"]["roots"])
+        self.assertTrue(all(PurePosixPath(root).is_absolute()
+                            for root in document["folders"]["roots"]))
+        document["folders"]["roots"] = [str(self.photos.resolve())]
+        parsed = validate(document, self.data.resolve())
+        self.assertEqual(parsed["folders"]["mode"], "restricted")
+        self.assertEqual(set(parsed), set(defaults()))
+        self.assertIsNone(parsed["folders"]["extensions"])
 
-    def test_underscore_keys_are_treated_as_comments(self):
-        path = self.data / "folder-library.json"
-        path.write_text(json.dumps({
-            "_comment": "hi", "roots": [str(self.photos)],
-            "extensions": [".jpg"], "recursive": False}), encoding="utf-8")
-        self.assertIsNone(self.lib.config().error)
-        self.assertEqual(self.lib.config().extensions, (".jpg",))
+    def test_unknown_fields_are_rejected_even_if_shaped_like_comments(self):
+        self.use_config(_comment="hi")
+        self.assertIsNotNone(self.lib.config().error)
+        self.assertEqual(self.lib.config().roots, ())
 
     def test_unknown_config_key_is_an_error_not_a_silent_ignore(self):
         self.use_config(recursiv=False)
         with self.assertRaises(FolderError) as caught:
             self.scan()
-        self.assertIn("未知配置项", str(caught.exception))
+        self.assertIn("folders", str(caught.exception))
 
-    def test_env_override_wins_over_the_default_path(self):
-        self.use_config()
-        other = self.base / "elsewhere" / "config.json"
-        other.parent.mkdir(parents=True)
-        other.write_text(json.dumps({"roots": [], "extensions": [".jpg"],
-                                     "recursive": False}), encoding="utf-8")
-        with mock.patch.dict(os.environ, {CONFIG_ENV: str(other)}):
+    def test_old_env_override_cannot_replace_the_config(self):
+        other = self.base / "elsewhere.json"
+        other.write_text(json.dumps({"roots": []}))
+        with mock.patch.dict(os.environ, {"LR_XMP_MIMIC_FOLDER_CONFIG": str(other)}):
             config = FolderLibrary(self.data).config()
-        self.assertEqual(config.source, "env")
-        self.assertEqual(config.path, other)
-
-    def test_env_pointing_at_a_missing_file_is_a_clear_error(self):
-        with mock.patch.dict(os.environ, {CONFIG_ENV: str(self.base / "nope.yaml")}):
-            config = FolderLibrary(self.data).config()
-        self.assertEqual(config.roots, ())
-        self.assertIn("不存在", config.error or "")
-        with self.assertRaises(FolderError):
-            FolderLibrary(self.data).scan(path=str(self.photos))
-
-    def test_legacy_folder_roots_is_read_with_default_extensions(self):
-        self.clear_config()
-        (self.data / "folder-roots.json").write_text(
-            json.dumps({"roots": [str(self.photos)], "updated_at": 1}), encoding="utf-8")
-        config = self.lib.config()
-        self.assertEqual(config.source, "legacy")
+        self.assertEqual(config.path, (self.data / "config.json").resolve())
         self.assertEqual(config.roots, (str(self.photos.resolve()),))
-        self.assertEqual(config.extensions, DEFAULT_EXTENSIONS)
-        self.assertFalse(config.recursive)
+
+    def test_missing_old_env_file_is_ignored(self):
+        with mock.patch.dict(os.environ, {"LR_XMP_MIMIC_FOLDER_CONFIG": str(self.base / "nope.yaml")}):
+            config = FolderLibrary(self.data).config()
+        self.assertIsNone(config.error)
+        self.assertEqual(config.roots, (str(self.photos.resolve()),))
+
+    def test_legacy_folder_roots_is_not_loaded(self):
+        self.clear_config()
+        (self.data / "folder-roots.json").write_text(json.dumps({"roots": []}))
+        config = self.lib.config()
+        self.assertEqual(config.source, "default")
+        self.assertTrue(config.roots)
 
     def test_primary_config_wins_over_legacy(self):
         (self.data / "folder-roots.json").write_text(
             json.dumps({"roots": [str(self.photos)]}), encoding="utf-8")
         self.use_config(roots=[])
         config = self.lib.config()
-        self.assertEqual(config.source, "primary")
+        self.assertEqual(config.source, "config")
         self.assertEqual(config.roots, ())
 
     def test_broken_config_does_not_fall_back_to_defaults_silently(self):
-        (self.data / "folder-library.json").write_text("{not json or yaml: [",
+        (self.data / "config.json").write_text("{not valid json: [",
                                                        encoding="utf-8")
         config = self.lib.config()
         self.assertIsNotNone(config.error)
@@ -824,16 +801,21 @@ class PreviewTestCase(FolderTestCase):
 
     def test_key_construction_matches_the_cached_blobs_already_on_disk(self):
         """Pins the hash so a later "improvement" cannot orphan live blobs."""
-        pinned = "/var/tmp/tonerelay-fixtures/IMG_0004.CR2"
-        self.assertEqual(file_key_for(pinned), "7d5a4125b75d460c18f9")
+        for resolved, key in (
+                ("/private/var/tmp/tonerelay-fixtures/IMG_0004.CR2", "7d5a4125b75d460c18f9"),
+                ("/var/tmp/tonerelay-fixtures/IMG_0004.CR2", "495216a882d2b29261c5"),
+                (r"C:\var\tmp\tonerelay-fixtures\IMG_0004.CR2", "b6ac31594a6e21adcad5")):
+            with self.subTest(resolved=resolved), mock.patch("workbench.folders.Path") as path:
+                path.return_value.resolve.return_value = resolved
+                self.assertEqual(file_key_for("fixture"), key)
 
     def test_legacy_cache_entry_is_reused_instead_of_re_importing(self):
         """Exactly the shape the live data root has today."""
         target = self.put("IMG_0004.CR2", b"raw-bytes")
         key = file_key_for(target)
-        (self.data / "folder-cache").mkdir(parents=True, exist_ok=True)
-        (self.data / "folder-cache" / f"{key}.jpg").write_bytes(JPEG_BYTES)
-        (self.data / "folder-cache" / "index.json").write_text(json.dumps({
+        self.lib.cache.mkdir(parents=True, exist_ok=True)
+        (self.lib.cache / f"{key}.jpg").write_bytes(JPEG_BYTES)
+        (self.lib.cache / "index.json").write_text(json.dumps({
             str(target.resolve()): {"uuid": "LEGACY-UUID", "key": key,
                                     "name": "IMG_0004.CR2", "at": 1},
         }), encoding="utf-8")
@@ -847,8 +829,8 @@ class PreviewTestCase(FolderTestCase):
     def test_legacy_uuid_is_reused_even_when_the_blob_is_gone(self):
         target = self.put("IMG_0004.CR2", b"raw-bytes")
         key = file_key_for(target)
-        (self.data / "folder-cache").mkdir(parents=True, exist_ok=True)
-        (self.data / "folder-cache" / "index.json").write_text(json.dumps({
+        self.lib.cache.mkdir(parents=True, exist_ok=True)
+        (self.lib.cache / "index.json").write_text(json.dumps({
             str(target.resolve()): {"uuid": "LEGACY-UUID", "key": key,
                                     "name": "IMG_0004.CR2", "at": 1},
         }), encoding="utf-8")

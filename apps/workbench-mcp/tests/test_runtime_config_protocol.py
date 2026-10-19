@@ -13,11 +13,13 @@ from unittest.mock import patch as mock_patch
 
 from workbench.catalog_discovery import catalog_identity_for_path
 from workbench.configuration_help import CONFIG_TOPICS
-from workbench.folders import CONFIG_ENV
+CONFIG_ENV = "LR_XMP_MIMIC_FOLDER_CONFIG"
 from workbench.runtime import Workbench
 from workbench.store import Store
 from workbench.targets import LrOpsRouter, TargetRegistry
 from workbench_mcp.server import TOOLS, McpServer
+from workbench_mcp import __version__
+from lr_ops.configuration import defaults
 
 
 class BridgeState:
@@ -42,6 +44,9 @@ class FakeBridge:
     def run(self, command, params=None):
         assert command == "probe_client"
         return {
+            "lr_version": "15.0 [20261001]",
+            "plugin_version": "0.4.0",
+            "build_id": "photo-marks-fixture",
             "access_mode": self.state.access_mode,
             "catalog_identity": self.state.catalog_identity,
             "catalog_id": self.state.catalog_id,
@@ -87,7 +92,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.target_path.write_bytes(b"test catalog metadata only")
         self.current_identity = catalog_identity_for_path(self.current_path)
         self.target_identity = catalog_identity_for_path(self.target_path)
-        registry = TargetRegistry(self.root / "targets.json")
+        registry = TargetRegistry(self.root / "config.json")
         self.fixture_token = secrets.token_hex(16)
         local = registry.add("本机", "http://127.0.0.1:17777",
                              token=self.fixture_token, access_mode="full")
@@ -130,7 +135,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                     os.environ["LR_XMP_MIMIC_ACCESS_MODE"] = environment
                 root = self.root / case
                 root.mkdir()
-                path = root / "targets.json"
+                path = root / "config.json"
                 registry = TargetRegistry(path)
                 if persist:
                     saved = registry.add("本机", "http://127.0.0.1:17777",
@@ -151,8 +156,8 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                                  expected)
                 self.assertEqual(path.read_bytes() if path.exists() else None,
                                  before)
-                self.assertIn("期望值不等于已保存",
-                              snapshot["help"]["guide"]["description"])
+                self.assertEqual(snapshot["catalog"]["access_mode"]["expected_persisted"], persist)
+                self.assertIn("expected_source", snapshot["help"]["guide"]["description"])
                 self.assertNotIn(str(root), json.dumps(snapshot))
 
     def test_user_can_inspect_and_change_runtime_settings_without_leaks(self):
@@ -168,8 +173,13 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                        self.current_identity, self.target_identity):
             self.assertNotIn(secret, serialized)
         self.assertEqual(overview["folder_access"]["mode"], "full")
-        self.assertEqual(overview["folder_access"]["roots"][0]["label"],
-                         "整个 Runtime 主机")
+        access_roots = self.server.wb.folders.roots()
+        self.assertEqual(len(overview["folder_access"]["roots"]), len(access_roots))
+        for root, entry in zip(access_roots, overview["folder_access"]["roots"]):
+            label = ("整个 Runtime 主机" if len(access_roots) == 1
+                     else f"Runtime 主机磁盘 {Path(root).anchor.strip()}")
+            self.assertEqual(entry["label"], label)
+            self.assertEqual(set(entry), {"key", "label"})
 
         # Simulate the user's exact request to reduce the image budget.
         self.assertEqual(value(call(self.server, "trlr_set_presentation_config", {
@@ -245,6 +255,31 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.assertEqual(help_index["next_step"]["topic"], "catalog")
         self.assertFalse((self.root / "presentation-settings.json").exists())
 
+    def test_unbound_next_step_names_catalog_and_bind_reply_without_writing(self):
+        config_path = self.root / "config.json"
+        before = config_path.read_bytes()
+        result = value(call(self.server, "trlr_get_runtime_config"))
+        step = result["help"]["next_step"]
+        self.assertIn(self.current_path.name, step["question"])
+        self.assertIn("full", step["question"])
+        self.assertEqual(step["user_reply"], "绑定")
+        self.assertEqual(config_path.read_bytes(), before)
+        self.assertFalse(result["catalog"]["authorized"])
+
+    def test_versions_are_live_independent_and_available_before_binding(self):
+        result = value(call(self.server, "trlr_get_runtime_config", {"topic": "versions"}))
+        initialized = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "initialize"})
+        self.assertEqual(result["versions"], {
+            "mcp_server": __version__, "lightroom": "15.0 [20261001]",
+            "lightroom_plugin": "0.4.0", "lightroom_plugin_build": "photo-marks-fixture"})
+        self.assertEqual(result["versions"]["mcp_server"], initialized["result"]["serverInfo"]["version"])
+        self.assertFalse(result["catalog"]["authorized"])
+        self.bridge_state.reachable = False
+        offline = value(call(self.server, "trlr_get_runtime_config", {"topic": "versions"}))
+        self.assertEqual(offline["versions"], {
+            "mcp_server": __version__, "lightroom": None,
+            "lightroom_plugin": None, "lightroom_plugin_build": None})
+
     def test_each_tutorial_returns_live_state_steps_and_a_verification_entry(self):
         schema = next(tool for tool in TOOLS
                       if tool["name"] == "trlr_get_runtime_config")["inputSchema"]
@@ -272,7 +307,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
             "catalog_identity": self.current_identity,
             "confirm_current_catalog": True,
         }))
-        binding_before = (self.root / "targets.json").read_bytes()
+        binding_before = (self.root / "config.json").read_bytes()
         self.bridge_state.sandbox_registered = False
         self.bridge_state.sandbox_matches_active = False
         result = value(call(self.server, "trlr_get_runtime_config", {"topic": "access_mode"}))
@@ -281,7 +316,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.assertEqual(result["help"]["next_step"]["topic"], "sandbox")
         self.assertFalse(result["help"]["guide"]["editable_in_conversation"])
         self.assertIn("Save mode", " ".join(result["help"]["guide"]["steps"]))
-        self.assertEqual((self.root / "targets.json").read_bytes(), binding_before)
+        self.assertEqual((self.root / "config.json").read_bytes(), binding_before)
         self.assertEqual(self.bridge_state.access_mode, "safe")
 
     def test_mode_mismatch_tutorial_preserves_expected_mode_and_binding(self):
@@ -289,13 +324,13 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
             "catalog_identity": self.current_identity,
             "confirm_current_catalog": True,
         }))
-        binding_before = (self.root / "targets.json").read_bytes()
+        binding_before = (self.root / "config.json").read_bytes()
         self.bridge_state.access_mode = "safe"
         result = value(call(self.server, "trlr_get_runtime_config", {"topic": "access_mode"}))
         self.assertEqual(result["catalog"]["access_mode"]["expected"], "full")
         self.assertEqual(result["catalog"]["access_mode"]["actual"], "safe")
         self.assertEqual(result["help"]["next_step"]["topic"], "access_mode")
-        self.assertEqual((self.root / "targets.json").read_bytes(), binding_before)
+        self.assertEqual((self.root / "config.json").read_bytes(), binding_before)
 
     def test_offline_query_still_returns_local_settings_and_complete_tutorial(self):
         self.bridge_state.reachable = False
@@ -307,22 +342,40 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.assertIn("Register active Catalog as sandbox",
                       " ".join(result["help"]["guide"]["steps"]))
 
+    def test_offline_connection_guide_matches_default_service_ownership(self):
+        self.bridge_state.reachable = False
+        before = (self.root / "config.json").read_bytes()
+        result = value(call(self.server, "trlr_get_runtime_config", {"topic": "connection"}))
+        steps = " ".join(result["help"]["guide"]["steps"])
+        initialized = self.server.handle({"jsonrpc": "2.0", "id": 2, "method": "initialize"})
+        instructions = initialized["result"]["instructions"]
+        self.assertEqual(defaults()["bridge"]["mode"], "external")
+        for text in (steps, instructions):
+            self.assertIn("external", text)
+            self.assertIn("bridge start", text)
+            self.assertIn("Lua 轮询", text)
+            self.assertIn("builtin", text)
+            self.assertIn("工具发现", text)
+        self.assertFalse(result["target"]["reachable"])
+        self.assertEqual(result["help"]["next_step"]["topic"], "connection")
+        self.assertEqual((self.root / "config.json").read_bytes(), before)
+
     def test_unknown_active_identity_without_reason_still_routes_to_connection(self):
-        before = (self.root / "targets.json").read_bytes()
+        before = (self.root / "config.json").read_bytes()
         with mock_patch.object(self.server.wb, "health", return_value={
                 "lrops": True, "catalog_policy": {}}):
             result = value(call(self.server, "trlr_get_runtime_config"))
         self.assertEqual(result["catalog"]["binding_status"], "active_catalog_unknown")
         self.assertIsNone(result["catalog"]["reason"])
         self.assertEqual(result["help"]["next_step"]["topic"], "connection")
-        self.assertEqual((self.root / "targets.json").read_bytes(), before)
+        self.assertEqual((self.root / "config.json").read_bytes(), before)
 
     def test_unanswered_probe_does_not_claim_catalog_mismatch_or_change_binding(self):
         value(call(self.server, "trlr_confirm_catalog", {
             "catalog_identity": self.current_identity,
             "confirm_current_catalog": True,
         }))
-        binding_before = (self.root / "targets.json").read_bytes()
+        binding_before = (self.root / "config.json").read_bytes()
         stored_catalog_name = self.server.wb.lrops.registry.active.catalog_id
         with mock_patch.object(FakeBridge, "run", side_effect=TimeoutError("probe timeout")):
             result = value(call(self.server, "trlr_get_runtime_config", {"topic": "connection"}))
@@ -336,7 +389,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.assertEqual(result["catalog"]["bound_catalog"], stored_catalog_name)
         self.assertEqual(result["help"]["next_step"]["topic"], "connection")
         self.assertEqual(result["image_presentation"]["codex_preview_max_edge"], 1024)
-        self.assertEqual((self.root / "targets.json").read_bytes(), binding_before)
+        self.assertEqual((self.root / "config.json").read_bytes(), binding_before)
 
     def test_observed_other_catalog_still_reports_real_mismatch(self):
         value(call(self.server, "trlr_confirm_catalog", {
@@ -351,13 +404,13 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         self.assertEqual(result["catalog"]["active_catalog"], self.target_path.name)
 
     def test_unbound_target_with_failed_probe_still_has_unknown_active_catalog(self):
-        binding_before = (self.root / "targets.json").read_bytes()
+        binding_before = (self.root / "config.json").read_bytes()
         with mock_patch.object(FakeBridge, "run", side_effect=TimeoutError("probe timeout")):
             result = value(call(self.server, "trlr_get_runtime_config"))
         self.assertEqual(result["catalog"]["binding_status"], "active_catalog_unknown")
         self.assertIsNone(result["catalog"]["bound_catalog"])
         self.assertEqual(result["help"]["next_step"]["topic"], "connection")
-        self.assertEqual((self.root / "targets.json").read_bytes(), binding_before)
+        self.assertEqual((self.root / "config.json").read_bytes(), binding_before)
 
     def test_binding_record_is_independent_of_display_name_and_live_probe(self):
         cases = (
@@ -374,7 +427,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
             with self.subTest(name=name):
                 case_root = self.root / name
                 case_root.mkdir()
-                registry = TargetRegistry(case_root / "targets.json")
+                registry = TargetRegistry(case_root / "config.json")
                 target = registry.add(
                     "本机", "http://127.0.0.1:17777", access_mode="full",
                     catalog_identity=self.current_identity if bound else None,
@@ -389,7 +442,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                 router = LrOpsRouter(
                     registry, client_factory=lambda base, token: FakeBridge(base, token, state))
                 server = McpServer(Workbench(Store(case_root), router))
-                before = (case_root / "targets.json").read_bytes()
+                before = (case_root / "config.json").read_bytes()
                 probe = (mock_patch.object(FakeBridge, "run", side_effect=TimeoutError("probe timeout"))
                          if live == "probe_failed" else nullcontext())
                 with probe:
@@ -400,7 +453,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                 self.assertEqual(catalog["binding_status"], status)
                 if observation == "unknown":
                     self.assertEqual(catalog["bound_catalog"], registry.active.catalog_id)
-                self.assertEqual((case_root / "targets.json").read_bytes(), before)
+                self.assertEqual((case_root / "config.json").read_bytes(), before)
                 serialized = json.dumps(result, ensure_ascii=False)
                 for secret in (self.current_identity, self.target_identity, str(case_root)):
                     self.assertNotIn(secret, serialized)
@@ -421,18 +474,12 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
         next_result = self.server.wb.runtime_config(topic="access_mode")
         self.assertTrue(next_result["help"]["guide"]["steps"])
 
-    def test_unreadable_image_config_preserves_other_state_and_help(self):
-        settings = self.root / "presentation-settings.json"
+    def test_damaged_unified_config_fails_without_overwriting_binding(self):
+        settings = self.root / "config.json"
         settings.write_text("not valid JSON", encoding="utf-8")
-        result = value(call(self.server, "trlr_get_runtime_config", {"topic": "image_presentation"}))
-        self.assertEqual(result["image_presentation"]["config_status"], "unreadable")
-        self.assertIsNone(result["image_presentation"]["codex_preview_max_edge"])
-        self.assertFalse(result["help"]["guide"]["editable_in_conversation"])
-        self.assertEqual(result["catalog"]["active_catalog"], self.current_path.name)
-        overview = value(call(self.server, "trlr_get_runtime_config"))
-        entry = next(row for row in overview["help"]["topics"]
-                     if row["id"] == "image_presentation")
-        self.assertFalse(entry["editable_in_conversation"])
+        result = call(self.server, "trlr_get_runtime_config", {"topic": "image_presentation"})
+        self.assertTrue(result["isError"])
+        self.assertIn("config.json", result["content"][0]["text"])
         self.assertEqual(settings.read_text(encoding="utf-8"), "not valid JSON")
 
     def test_catalog_inventory_only_marks_supported_local_hosts_switchable(self):

@@ -36,6 +36,9 @@ class BootstrapStatusTests(unittest.TestCase):
 
     def runtime_root(self, root: Path,
                      catalog_confirmation: bool = True) -> tuple[Path, Path]:
+        if os.name != "posix":
+            self.skipTest("macOS installation fixture requires POSIX ledger locking")
+        bootstrap.prepare_installation(root)
         version = root / "versions" / "source"
         commands = version / "source" / "plugins" / "lightroom" / "lr-xmp-mimic.lrdevplugin" / "Commands.lua"
         commands.parent.mkdir(parents=True)
@@ -277,6 +280,9 @@ class BootstrapInstallTests(unittest.TestCase):
         for relative in bootstrap.RUNTIME_SOURCE_DIRECTORIES:
             (source / relative).mkdir(parents=True, exist_ok=True)
         (source / "apps/workbench/requirements.txt").write_text("", encoding="utf-8")
+        config = source / "services/lr-ops/lr_ops/configuration.py"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(bootstrap._config_path.read_text(encoding="utf-8"), encoding="utf-8")
         commands = source / "plugins/lightroom/lr-xmp-mimic.lrdevplugin/Commands.lua"
         commands.parent.mkdir(parents=True)
         commands.write_text(
@@ -286,6 +292,8 @@ class BootstrapInstallTests(unittest.TestCase):
         return source
 
     def run_install(self, runtime_root: Path, source: Path, version: str) -> tuple[int, dict[str, object]]:
+        if os.name != "posix":
+            self.skipTest("macOS installation fixture requires POSIX ledger locking")
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             exit_code = bootstrap.install(runtime_root, source, version)
@@ -313,16 +321,18 @@ class BootstrapInstallTests(unittest.TestCase):
             self.assertEqual((version / "lightroom").resolve(),
                                  (version / "source/plugins/lightroom").resolve())
 
-    def test_virtualenv_uses_symlinked_interpreter(self):
+    @unittest.skipUnless(os.name == "posix", "macOS installation fixture requires POSIX ledger locking")
+    def test_virtualenv_uses_symlinked_interpreter_and_root_environment(self):
         with tempfile.TemporaryDirectory() as temporary:
-            version_root = Path(temporary) / "version"
-            builder = mock.Mock()
-            with mock.patch.object(
-                    bootstrap.venv, "EnvBuilder", return_value=builder) as env_builder:
+            root = Path(temporary) / "runtime"
+            version_root = root / "versions" / "v1"
+            bootstrap.prepare_installation(root)
+            with mock.patch.object(bootstrap.subprocess, "run") as run:
                 bootstrap.create_virtualenv(version_root)
-
-        env_builder.assert_called_once_with(with_pip=True, clear=True, symlinks=True)
-        builder.create.assert_called_once_with(version_root / ".venv")
+            command = run.call_args.args[0]
+            self.assertIn("--symlinks", command)
+            self.assertEqual(command[-1], str(version_root / ".venv"))
+            self.assertEqual(run.call_args.kwargs["env"]["PIP_CACHE_DIR"], str(root.resolve() / "cache/pip"))
 
     def test_repeat_install_is_idempotent_and_reactivates_version(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -361,6 +371,7 @@ class BootstrapInstallTests(unittest.TestCase):
             self.assertEqual(first_result["lightroom_plugin"], expected_registration)
             self.assertEqual(second_result["lightroom_plugin"], expected_registration)
 
+    @unittest.skipUnless(os.name == "posix", "macOS installation fixture requires POSIX ledger locking")
     def test_rejects_incomplete_explicit_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = io.StringIO()
@@ -430,27 +441,40 @@ class BootstrapPlatformTests(unittest.TestCase):
         root = Path(self.temporary.name) / "runtime"
         self.assertEqual(bootstrap.data_root(root), (root / "data").resolve())
 
-    def test_explicit_data_override_precedes_saved_choice(self):
+    def test_old_data_selection_and_inherited_override_are_ignored(self):
         root = Path(self.temporary.name) / "runtime"
         root.mkdir()
-        saved = Path(self.temporary.name) / "saved-data"
-        (root / "data-selection.json").write_text(json.dumps({"data_root": str(saved.resolve())}))
-        explicit = Path(self.temporary.name) / "explicit-data"
-        with mock.patch.dict(bootstrap.os.environ, {"LR_XMP_MIMIC_RUNTIME_DATA_ROOT": str(explicit)}):
-            self.assertEqual(bootstrap.data_root(root), explicit.resolve())
-        self.assertEqual(bootstrap.data_root(root), saved.resolve())
+        (root / "data-selection.json").write_text(json.dumps({"data_root": "ignored"}))
+        with mock.patch.dict(bootstrap.os.environ, {"LR_XMP_MIMIC_RUNTIME_DATA_ROOT": "ignored"}):
+            self.assertEqual(bootstrap.data_root(root), (root / "data").resolve())
 
-    def test_mcp_config_uses_the_stable_active_link(self):
+    def test_mcp_config_uses_the_stable_launcher_and_one_config_locator(self):
         root = Path("/tmp/runtime")
         config = bootstrap.mcp_server_config(root)["tonerelay-lightroom"]
-        self.assertEqual(config["args"], ["-m", "workbench_mcp"])
-        self.assertIn("active", config["command"])
-        self.assertEqual(
-            config["env"]["PYTHONPATH"].split(bootstrap.os.pathsep),
-            [str(root / "active" / "source" / relative)
-             for relative in bootstrap.RUNTIME_PYTHONPATH_ENTRIES])
+        self.assertEqual(config["args"], [])
+        self.assertEqual(config["command"], str(bootstrap.launcher_path(root)))
+        self.assertEqual(config["env"], {"TONERELAY_CONFIG": str(root / "config.json"),
+                                        "LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"})
 
-
+    def test_mcp_config_defaults_local_images_on_and_preserves_explicit_zero(self):
+        root = Path(self.temporary.name) / "runtime"
+        root.mkdir()
+        for legacy in (False, True):
+            if legacy:
+                (root / "data-selection.json").write_text("{}", encoding="utf-8")
+            for value in (None, "0", "1"):
+                with self.subTest(legacy=legacy, value=value), \
+                     mock.patch.dict(bootstrap.os.environ, {}), \
+                     mock.patch.object(bootstrap, "data_root", return_value=root / "data"):
+                    if value is None:
+                        bootstrap.os.environ.pop("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", None)
+                    else:
+                        bootstrap.os.environ["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"] = value
+                    config = bootstrap.mcp_server_config(root)["tonerelay-lightroom"]
+                    self.assertEqual(config["env"]["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"],
+                                     "1" if value is None else value)
+                    self.assertEqual(config["command"], str(bootstrap.launcher_path(root)))
+                    self.assertEqual(config["args"], [])
 
 class ComponentOperationTests(unittest.TestCase):
     """Every component exposes the operations an agent needs to drive it."""
@@ -460,12 +484,17 @@ class ComponentOperationTests(unittest.TestCase):
         for relative in bootstrap.RUNTIME_SOURCE_DIRECTORIES:
             (source / relative).mkdir(parents=True, exist_ok=True)
         (source / "apps/workbench/requirements.txt").write_text("", encoding="utf-8")
+        config = source / "services/lr-ops/lr_ops/configuration.py"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(bootstrap._config_path.read_text(encoding="utf-8"), encoding="utf-8")
         commands = source / "plugins/lightroom/lr-xmp-mimic.lrdevplugin/Commands.lua"
         commands.parent.mkdir(parents=True)
         commands.write_text("build_id = 'component-build'", encoding="utf-8")
         return source
 
     def install(self, runtime_root: Path, version: str) -> None:
+        if os.name != "posix":
+            self.skipTest("macOS installation fixture requires POSIX ledger locking")
         source = self.source_tree(runtime_root.parent / f"src-{version}")
         output = io.StringIO()
         with contextlib.redirect_stdout(output), \
@@ -538,6 +567,7 @@ class ComponentOperationTests(unittest.TestCase):
                     self.assertIn(needle, result["next"])
                     self.assertTrue(result["reason"])
 
+    @unittest.skipUnless(os.name == "posix", "macOS installation fixture requires POSIX ledger locking")
     def test_dependency_failure_points_at_the_mirror_reference(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -580,14 +610,14 @@ class ComponentOperationTests(unittest.TestCase):
 
             output = io.StringIO()
             with contextlib.redirect_stdout(output), \
-                 mock.patch.object(bootstrap.shutil, "rmtree",
+                 mock.patch.object(bootstrap.Path, "unlink",
                                    side_effect=OSError("in use")):
                 exit_code = bootstrap.runtime_uninstall(root, "all")
             result = json.loads(output.getvalue())
 
             self.assertEqual(exit_code, 1)
             self.assertEqual(result["status"], "uninstall_failed")
-            self.assertIn("Stop the bridge", result["next"])
+            self.assertIn("ownership/process", result["next"])
 
     def test_control_script_pins_its_own_runtime_root(self):
         """A control script must drive the install it belongs to, not the default."""
@@ -610,7 +640,8 @@ class ComponentOperationTests(unittest.TestCase):
             self.assertTrue(bootstrap.launcher_path(root).is_file())
             text = control.read_text(encoding="utf-8")
             self.assertIn("tonerelay_bootstrap_macos.py", text)
-            self.assertIn(str(bootstrap.data_root(root)), text)
+            self.assertIn('export TONERELAY_CONFIG="$ROOT/config.json"', text)
+            self.assertIn("configuration.py", text)
 
     def test_uninstall_removes_one_version_and_clears_active(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -664,6 +695,7 @@ class ComponentOperationTests(unittest.TestCase):
 
             self.assertFalse(entry.exists() or entry.is_symlink())
 
+    @unittest.skipUnless(os.name == "posix", "POSIX kill(pid, 0) process probe")
     def test_process_alive_distinguishes_a_live_pid_from_a_dead_one(self):
         self.assertTrue(bootstrap.process_alive(os.getpid()))
         self.assertFalse(bootstrap.process_alive(999999999))

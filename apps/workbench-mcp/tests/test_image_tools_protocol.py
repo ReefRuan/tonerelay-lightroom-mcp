@@ -209,7 +209,8 @@ class ImageToolsProtocolTests(unittest.TestCase):
             "photo_uuid": "catalog-photo", "size": 1024, "max_edge": 1024})
         self.assertFalse(result["isError"])
         self.assertEqual(client.thumbnail_sizes, [64])
-        with Image.open(io.BytesIO(base64.b64decode(result["content"][1]["data"]))) as image:
+        block = next(block for block in result["content"] if block["type"] == "image")
+        with Image.open(io.BytesIO(base64.b64decode(block["data"]))) as image:
             self.assertEqual(max(image.size), 64)
 
     def test_photo_preview_requests_no_more_than_its_effective_codex_edge(self):
@@ -223,7 +224,8 @@ class ImageToolsProtocolTests(unittest.TestCase):
 
         self.assertFalse(result["isError"])
         self.assertEqual(client.thumbnail_sizes, [64])
-        with Image.open(io.BytesIO(base64.b64decode(result["content"][1]["data"]))) as image:
+        block = next(block for block in result["content"] if block["type"] == "image")
+        with Image.open(io.BytesIO(base64.b64decode(block["data"]))) as image:
             self.assertEqual(max(image.size), 64)
 
     def test_presentation_config_caps_each_native_image_transform(self):
@@ -271,14 +273,15 @@ class ImageToolsProtocolTests(unittest.TestCase):
         result = self.call("trlr_get_photo_preview", {"photo_uuid": "catalog-photo",
                                                         "size": 640, "max_edge": 64})
         self.assertFalse(result["isError"])
-        self.assertEqual(len(result["content"]), 2)
+        self.assertEqual(len(result["content"]), 3)
         metadata = self.metadata(result)
         self.assertEqual(metadata["method"], "requestJpegThumbnail")
         self.assertEqual(metadata["freshness"], "unverified")
         self.assertEqual(metadata["artifact"]["schema_version"], "artifact-ref-v1")
         self.assertEqual(metadata["artifact"]["evidence_status"], "unverified")
         self.assertNotIn("preview_path", metadata)
-        self.assertEqual(result["content"][1]["type"], "image")
+        self.assertEqual(json.loads(result["content"][1]["text"])["display"]["kind"], "local_file")
+        self.assertEqual(result["content"][2]["type"], "image")
 
     def test_measure_matches_shared_module_and_stays_path_free(self):
         arguments = {"source": self.source, "roi": [0.25, 0.25, 0.5, 0.5],
@@ -297,7 +300,7 @@ class ImageToolsProtocolTests(unittest.TestCase):
         arguments = {"left": left, "right": right, "roi": [0.0, 0.0, 0.5, 1.0], "max_edge": 64}
         result = self.call("trlr_image_compare", arguments)
         self.assertFalse(result["isError"])
-        self.assertEqual(len(result["content"]), 2)
+        self.assertEqual(len(result["content"]), 3)
         metadata = self.metadata(result)
         expected = ImageTools(self.episodes).compare(**arguments)
         expected.pop("preview")
@@ -305,7 +308,8 @@ class ImageToolsProtocolTests(unittest.TestCase):
         actual.pop("preview")
         self.assertEqual(actual, expected)
         self.assertNotIn("base64", json.dumps(metadata))
-        block = result["content"][1]
+        self.assertEqual(json.loads(result["content"][1]["text"])["display"]["kind"], "local_file")
+        block = result["content"][2]
         self.assertEqual(block["type"], "image")
         self.assertEqual(block["mimeType"], "image/jpeg")
         with Image.open(io.BytesIO(base64.b64decode(block["data"]))) as image:

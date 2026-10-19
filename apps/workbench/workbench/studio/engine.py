@@ -1,6 +1,8 @@
 """Versioned edit episodes using only real LR rendering.
 
-All versions are separate virtual copies from the unchanged source master.
+All versions are separate virtual copies. A master photo or one of its
+virtual copies may serve as the episode source; copies made during an
+episode inherit the source's current develop state.
 File locks serialize Runtime writers; atomic JSON commits keep reads coherent.
 No automatic replay after an uncertain LR write or process interruption.
 """
@@ -10,6 +12,7 @@ import json
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -36,15 +39,84 @@ from . import parameter_specs
 ACTIVE = {'creating', 'editing', 'searching', 'rendering_parameter_variants',
           'verifying', 'restoring', 'exploring', 'probing'}
 
+# Name prefix for every virtual copy an Episode renders; MCP-created copies
+# are recognized (and can be continued) by this prefix.
+RENDER_COPY_PREFIX = 'TRLR'
+
+
+def render_copy_name(state, number):
+    """Human-readable name for a rendered version copy, e.g.
+    ``TRLR 2026-10-17 6b2bf530 v2`` — date + episode id + version."""
+    day = datetime.fromtimestamp(state['created_at']).strftime('%Y-%m-%d')
+    return f'{RENDER_COPY_PREFIX} {day} {state["id"][:8]} v{number}'
+
 
 class Conflict(ValueError):
     pass
 
 
+def ui_context_summary(value):
+    """Keep restoration facts; never persist SDK objects or host paths."""
+    parts = ('sources', 'selection', 'module')
+    statuses = {'restored', 'partial', 'unavailable'}
+    part_statuses = {'restored', 'not_restored', 'unavailable', 'skipped'}
+    codes = {'snapshot_unavailable', 'catalog_changed', 'ownership_unavailable',
+             'user_interference', 'restore_unavailable', 'restore_failed',
+             'readback_mismatch', 'restore_dependency_failed', 'not_reported',
+             'invalid_report'}
+    if not isinstance(value, dict) or value.get('schema_version') != 'lr-ui-context-v1':
+        return {
+            'schema_version': 'lr-ui-context-v1', 'status': 'unavailable',
+            'parts': {part: {'status': 'unavailable'} for part in parts},
+            'warnings': [{'part': 'all', 'code': 'not_reported' if value is None else 'invalid_report'}],
+        }
+    raw_status = value.get('status')
+    invalid = not isinstance(raw_status, str) or raw_status not in statuses
+    invalid = invalid or not isinstance(value.get('warnings'), list)
+    report = {'schema_version': 'lr-ui-context-v1',
+              'status': raw_status if not invalid else 'unavailable',
+              'parts': {}, 'warnings': []}
+    raw_parts = value.get('parts') if isinstance(value.get('parts'), dict) else {}
+    for part in parts:
+        raw = raw_parts.get(part)
+        status = raw.get('status') if isinstance(raw, dict) else None
+        valid = isinstance(status, str) and status in part_statuses
+        invalid = invalid or not valid
+        report['parts'][part] = {'status': status if valid else 'unavailable'}
+    for warning in value.get('warnings', []) if isinstance(value.get('warnings'), list) else []:
+        if (isinstance(warning, dict) and isinstance(warning.get('part'), str)
+                and warning.get('part') in (*parts, 'all')
+                and isinstance(warning.get('code'), str) and warning.get('code') in codes):
+            report['warnings'].append({'part': warning['part'], 'code': warning['code']})
+        else:
+            invalid = True
+    if invalid:
+        report['status'] = 'unavailable'
+        report['warnings'].append({'part': 'all', 'code': 'invalid_report'})
+    if report['status'] == 'restored' and any(report['parts'][part]['status'] != 'restored' for part in parts):
+        report['status'] = 'unavailable'
+        report['warnings'].append({'part': 'all', 'code': 'invalid_report'})
+    return report
+
+
 def atomic(path, value):
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
-    temp.replace(path)
+    try:
+        temp.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                temp.replace(path)
+                break
+            except PermissionError as exc:
+                # Windows readers can briefly deny replacement of episode.json.
+                # Retry only the same finished JSON commit, never Lightroom I/O.
+                if (getattr(exc, 'winerror', None) not in (5, 32, 33)
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(0.01)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def fingerprint(value):
@@ -52,6 +124,42 @@ def fingerprint(value):
     payload = json.dumps(value, sort_keys=True, ensure_ascii=False,
                          separators=(',', ':'), allow_nan=False).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def omitted_snapshot(value):
+    """Compact stand-in for a develop snapshot omitted from a public response.
+
+    Full snapshots stay on disk and remain available through
+    ``trlr_get_episode(include_snapshots=True)``.
+    """
+    if (isinstance(value, dict) and value.get('omitted') is True
+            and set(value) == {'omitted', 'sha256', 'keys'}):
+        return value
+    return {'omitted': True,
+            'sha256': fingerprint(value),
+            'keys': len(value) if isinstance(value, dict) else None}
+
+
+def mismatch_value(value):
+    """Keep small readback facts verbatim; summarize bulky structured values.
+
+    A passthrough key like MaskGroupBasedCorrections can carry kilobytes of
+    nested tables; echoing the request verbatim inside every mismatch made
+    responses larger than the render they described.
+    """
+    # Some older Runtime versions persisted these summaries. Their original
+    # values are no longer available here; preserve the existing evidence,
+    # including its hash, instead of hashing the summary a second time.
+    if (isinstance(value, dict) and value.get('omitted') is True
+            and set(value) == {'omitted', 'type', 'sha256', 'preview'}):
+        return value
+    if isinstance(value, (dict, list)):
+        payload = json.dumps(value, ensure_ascii=False)
+        if len(payload) > 200:
+            return {'omitted': True, 'type': type(value).__name__,
+                    'sha256': fingerprint(value),
+                    'preview': payload[:200]}
+    return value
 
 
 def validate_query(query):
@@ -78,14 +186,28 @@ def reference_digest(state):
     return None
 
 
-def public_state(state):
+def public_state(state, include_snapshots=True):
     """Project an Episode without retired Runtime-side decision/content fields.
 
     ``raw()`` deliberately preserves every historical JSON field in memory,
     while public responses expose only current state, measurements, execution
     provenance, and neutral compatibility records.
+
+    With ``include_snapshots=False`` the bulky develop snapshots
+    (``source_snapshot``, ``baseline_snapshot`` and each version's
+    ``snapshot``) are replaced by ``omitted_snapshot`` stand-ins carrying a
+    stable hash. Bulky mismatch values are also summarized only in this
+    compact projection. Callers can retrieve the full stored values through
+    ``trlr_get_episode(include_snapshots=True)``; summaries persisted by older
+    Runtime versions remain summaries because their original values are lost.
     """
     result = json.loads(json.dumps(state))
+    if not include_snapshots:
+        for key in ('source_snapshot', 'baseline_snapshot'):
+            if isinstance(result.get(key), dict):
+                result[key] = omitted_snapshot(result[key])
+    if 'ui_context' in result:
+        result['ui_context'] = ui_context_summary(result['ui_context'])
     if result.get('mode') == 'style_explore':
         # Do not leak the retired Agent-like name from legacy Episode files.
         result['mode'] = 'source_edit'
@@ -115,6 +237,8 @@ def public_state(state):
         if isinstance(request, dict) and request.get('mode') == 'style_explore':
             request['mode'] = 'source_edit'
     for version in result.get('versions') or []:
+        if 'ui_context' in version:
+            version['ui_context'] = ui_context_summary(version['ui_context'])
         # Older Runtime versions attached an implicit image-response comparison
         # to every render. Keep it on disk for compatibility, but do not expose
         # it as part of the current execution contract.
@@ -128,7 +252,7 @@ def public_state(state):
             requested = legacy.get('requested_value', legacy.get('value'))
             applied = legacy.get('applied_value')
             if applied is None and parameter:
-                applied = (version.get('snapshot') or {}).get(parameter, requested)
+                applied = (version.get('snapshot') or {}).get(parameter)
             version['parameter_variant'] = {
                 key: value for key, value in {
                     'parameter': parameter,
@@ -145,6 +269,16 @@ def public_state(state):
                     'color_space': legacy.get('color_space'),
                 }.items() if value is not None
             }
+        # Compatibility projections above need the real readback before it
+        # is omitted. Never substitute a requested value for missing evidence.
+        if not include_snapshots:
+            if isinstance(version.get('snapshot'), dict):
+                version['snapshot'] = omitted_snapshot(version['snapshot'])
+            for entry in version.get('readback_mismatches') or []:
+                if isinstance(entry, dict):
+                    for key in ('requested', 'applied'):
+                        if key in entry:
+                            entry[key] = mismatch_value(entry[key])
     return result
 
 
@@ -242,14 +376,14 @@ class Studio:
         path = self.directory(sid) / 'episode.json'
         if not path.is_file():
             raise ValueError('Episode not found')
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding='utf-8'))
 
     def save(self, state):
         state['revision'] += 1
         state['updated_at'] = time.time()
         atomic(self.directory(state['id']) / 'episode.json', state)
 
-    def get(self, sid):
+    def get(self, sid, include_snapshots=True):
         state = self.raw(sid)
         if state['status'] in ACTIVE:
             try:
@@ -261,7 +395,7 @@ class Studio:
                         self.save(state)
             except Conflict:
                 pass
-        return public_state(state)
+        return public_state(state, include_snapshots=include_snapshots)
 
     def list(self):
         rows = []
@@ -271,7 +405,7 @@ class Studio:
             # 只按 source_name 匹配会在同名文件上接错历史。
             row = {k: s.get(k) for k in ('id', 'mode', 'status', 'revision', 'created_at',
                                          'updated_at', 'intent', 'source_uuid', 'source_name',
-                                         'current_version', 'target_id')}
+                                         'current_version', 'target_id', 'ui_context')}
             # 列表只返回版本摘要，避免把完整 Episode 状态带入筛选请求：
             # 每版的虚拟副本 uuid、预览名、是否通过 XMP 回放验证。
             copies = {entry.get('version'): entry.get('copy_name')
@@ -353,8 +487,9 @@ class Studio:
                  'Runtime 不修改或删除原片。'),
                 ('插件在执行点核对 safe/full 模式和 Catalog 身份；safe 额外要求已登记的 Sandbox，'
                  'full 不限制 Catalog 路径，但不会绕过工具边界。'),
-                ('Lightroom 的虚拟副本 SDK 依赖可见选择状态；相关操作可能切到 Library、'
-                 '激活 All Photographs 并改变当前选中照片，Runtime 目前不恢复此前 UI 状态。'),
+                ('Lightroom 的虚拟副本 SDK 依赖可见选择状态。创建副本后插件尝试恢复原来源、'
+                 '选片和模块，ui_context 按读回结果报告；同来源不强制切换目录或模块，跨来源可临时激活'
+                 ' All Photographs 并恢复。恢复警告不表示需要重新创建已成功的副本。'),
             ],
         }
 
@@ -401,7 +536,7 @@ class Studio:
                 requested = record.get('requested_value', record.get('value'))
                 applied = record.get('applied_value')
                 if applied is None:
-                    applied = (version.get('snapshot') or {}).get(parameter, requested)
+                    applied = (version.get('snapshot') or {}).get(parameter)
                 results.append({
                     'id': f'{state["id"]}-v{version["version"]}',
                     'episode_id': state['id'],
@@ -619,7 +754,7 @@ class Studio:
         if not state.get('source_uuid'):
             raise ValueError('Episode has no source photo; create a new Episode with source_uuid')
 
-    def create(self, source_uuid, reference_uuid=None, same_capture=False, intent='', long_edge=1024, mode='same_capture_match'):
+    def create(self, source_uuid, reference_uuid=None, same_capture=False, intent='', long_edge=1024, mode='same_capture_match', include_snapshots=True):
         if mode not in ('same_capture_match', 'source_edit'):
             raise ValueError('Unknown episode mode')
         if mode == 'same_capture_match' and (same_capture is not True or not reference_uuid):
@@ -635,8 +770,6 @@ class Studio:
         probe = self.probe()
         catalog_identity = probe['catalog_identity']
         baseline = self.snapshot(source_uuid, catalog_identity)
-        if baseline['photo']['is_virtual_copy']:
-            raise ValueError('Source must be a master photo')
         sid = str(uuid.uuid4())
         self.directory(sid).mkdir()
         now = time.time()
@@ -667,7 +800,7 @@ class Studio:
                 state.update(status='failed', error=str(exc))
                 self.save(state)
                 raise
-        return public_state(state)
+        return public_state(state, include_snapshots=include_snapshots)
 
     def render_version(self, state, patch, note):
         """Render and audit one immutable LR virtual-copy version.
@@ -682,11 +815,14 @@ class Studio:
         catalog_identity = state.get('catalog_identity')
         copied = self.run(
             'create_virtual_copy',
-            {'photo_uuid': state['source_uuid'], 'name': f'Mimic {sid[:8]} v{number}'},
+            {'photo_uuid': state['source_uuid'],
+             'name': render_copy_name(state, number)},
             catalog_identity=catalog_identity)
         photo = copied['copy']['uuid']
         # Persist provenance before the next possible failure.
         state['pending_copy_uuid'] = photo
+        ui_context = ui_context_summary(copied.get('ui_context'))
+        state['ui_context'] = ui_context
         self.save(state)
         self.run('capture_baseline', {'photo_uuid': photo},
                  catalog_identity=catalog_identity)
@@ -733,6 +869,7 @@ class Studio:
                 })
         self.check_source(state)
         result = {'version': number, 'photo_uuid': photo, 'patch': patch, 'snapshot': readback,
+                  'ui_context': ui_context,
                   'readback_mismatches': mismatched,
                   'note': note, 'created_at': time.time(), 'preview': f'v{number}.jpg',
                   'sha256': sha(path),
@@ -792,9 +929,10 @@ class Studio:
             state = self.raw(sid)
             if action != 'message':
                 self._require_source(state)
+            include_snapshots = options.pop('include_snapshots', True)
             operation = {'action': action, **options}
             if not self._begin(state, base_revision, request_id, operation):
-                return public_state(state)
+                return public_state(state, include_snapshots=include_snapshots)
             if action != 'message':
                 probe = self.probe(state.get('catalog_identity'))
                 self.bind_catalog(state, probe)
@@ -843,7 +981,7 @@ class Studio:
                 state['operations'][request_id]['status'] = 'failed'
                 self.save(state)
                 raise
-        return public_state(state)
+        return public_state(state, include_snapshots=include_snapshots)
 
     def check_version(self, state, number):
         if type(number) is not int or not 0 <= number < len(state['versions']):
@@ -861,7 +999,7 @@ class Studio:
         original = self.check_version(state, number)
         if not original['patch']:
             raise ValueError('基准版本没有可导出的修改参数')
-        name = f'Mimic {state["id"][:8]} v{number}'
+        name = render_copy_name(state, number)
         xmp = to_xmp(original['patch'], name)
         parsed = from_xmp(xmp)
         directory = self.directory(state['id'])

@@ -1,6 +1,6 @@
 {
   "name": "tonerelay-lightroom",
-  "version": "0.1.0",
+  "version": "0.6.2",
   "description": "Launch and recover the local ToneRelay Lightroom Runtime in Codex.",
   "author": {
     "name": "ReefRuan",

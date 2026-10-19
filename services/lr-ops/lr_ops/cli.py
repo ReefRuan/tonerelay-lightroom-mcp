@@ -41,7 +41,8 @@ from . import server as server_mod
 from .catalog_binding import CatalogBinding
 
 BASE = f"http://{server_mod.HOST}:{server_mod.PORT}"
-TOKEN = os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN") or None
+TOKEN = (server_mod._BRIDGE["token"] if server_mod._BRIDGE
+         else os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN") or None)
 
 
 def _headers(extra: dict | None = None) -> dict:
@@ -134,7 +135,7 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(prog="lr_ops")
     parser.add_argument("command", choices=[
         "serve", "probe", "selection", "state", "baseline",
-        "mkcopy", "apply", "reset", "export", "import",
+        "mkcopy", "apply", "reset", "export", "import", "xmp", "mask",
     ])
     parser.add_argument("args", nargs="*")
     parser.add_argument("--host", default=None, help="bind address (serve only)")
@@ -156,6 +157,10 @@ def main(argv: list[str] | None = None):
         submit = bound_submitter()
         if args.command == "selection":
             out = submit("get_selection", {})
+        elif args.command in ("xmp", "mask"):
+            params = json.loads(args.args[1]) if len(args.args) > 1 else {}
+            params["photo_uuid"] = args.args[0]
+            out = submit("update_xmp_sidecar" if args.command == "xmp" else "apply_mask", params)
         elif args.command == "state":
             out = submit("get_develop_state", {"photo_uuid": args.args[0]})
         elif args.command == "baseline":

@@ -22,6 +22,28 @@ local copy = {
   settings = { Exposure2012 = 0 },
   master = source,
 }
+-- LR never chains virtual copies: a copy made from a virtual copy still
+-- reports the master photo, not the source virtual copy.
+local copy2 = {
+  uuid = 'copy2-uuid',
+  virtual = true,
+  file = 'source.jpg',
+  settings = copy.settings,
+  master = source,
+}
+local stranger = {
+  uuid = 'stranger-uuid',
+  virtual = false,
+  file = 'other.jpg',
+  settings = { Exposure2012 = 0 },
+}
+local badCopy = {
+  uuid = 'badcopy-uuid',
+  virtual = true,
+  file = 'other.jpg',
+  settings = copy.settings,
+  master = stranger,
+}
 local selected = source
 local exportSettings
 local exportMissing = false
@@ -46,7 +68,7 @@ local function metadata(photo, key)
   return nil
 end
 
-for _, photo in ipairs({ source, copy }) do
+for _, photo in ipairs({ source, copy, copy2, badCopy }) do
   function photo:getRawMetadata(key) return metadata(self, key) end
   function photo:getFormattedMetadata(key)
     if key == 'fileName' then return self.file end
@@ -75,12 +97,15 @@ function catalog:getPath() return self.path end
 function catalog:findPhotoByUuid(uuid)
   if uuid == source.uuid then return source end
   if uuid == copy.uuid then return copy end
+  if uuid == copy2.uuid then return copy2 end
 end
 function catalog:setSelectedPhotos(photo)
   if selectFailure then error('mock selection failed') end
   selected = photo
 end
 function catalog:getTargetPhoto() return selected end
+function catalog:getTargetPhotos() return { selected } end
+function catalog:getMultipleSelectedOrAllPhotos() return { source, copy } end
 function catalog:withWriteAccessDo(_, callback)
   if writeFailure then error('mock write gate failed') end
   callback(); return 'executed'
@@ -91,6 +116,9 @@ end
 function catalog:createVirtualCopies()
   if copyCreateFailure then error('mock createVirtualCopies failed') end
   if self.returnFalse then return false end
+  if self.copyFromVirtual then selected = copy2; return { copy2 } end
+  if self.returnBadMaster then selected = badCopy; return { badCopy } end
+  selected = copy
   return { copy }
 end
 
@@ -101,14 +129,14 @@ import = function(name)
   elseif name == 'LrExportSession' then
     return function(options)
       exportSettings = options.exportSettings
-      return { doExportOnCurrentTask = function() end }
+      return { renditions = function() return ipairs({ { photo = options.photosToExport[1], waitForRender = function() return true, '/tmp/f1/source.jpg' end } }) end }
     end
   elseif name == 'LrFileUtils' then
     return { createAllDirectories = function() end,
-      exists = function() return not exportMissing end, delete = function() end,
+      exists = function() return not exportMissing and 'file' or false end, fileAttributes = function() return { fileSize = 8 } end, delete = function() end,
       writeFile = function(path, data) thumbnailWritten = { path = path, data = data } end }
   elseif name == 'LrPathUtils' then
-    return { child = function(dir, name) return dir .. '/' .. name end }
+    return { child = function(dir, name) return dir .. '/' .. name end, parent = function(path) return path:match('^(.*)/[^/]+$') end }
   elseif name == 'LrTasks' then
     return { pcall = function(fn, ...) return pcall(fn, ...) end,
       sleep = function() end }
@@ -133,7 +161,7 @@ check('false createVirtualCopies result is rejected', not ok and tostring(result
   tostring(result))
 catalog.returnFalse = false
 
-selectFailure = true
+selectFailure = true; selected = copy
 ok, result = pcall(Commands.create_virtual_copy, { photo_uuid = source.uuid })
 check('selection phase errors retain phase label', not ok and tostring(result):match('phase=select_source') ~= nil,
   tostring(result))
@@ -158,6 +186,18 @@ check('copy verification phase errors retain phase label', not ok and tostring(r
   tostring(result))
 copyInfoFailure = false
 
+catalog.copyFromVirtual = true
+ok, result = pcall(Commands.create_virtual_copy, { photo_uuid = copy.uuid })
+check('copy of a virtual copy is allowed; master resolves via the shared master',
+  ok and result and result.copy and result.copy.uuid == copy2.uuid, tostring(result))
+catalog.copyFromVirtual = false
+
+catalog.returnBadMaster = true
+ok, result = pcall(Commands.create_virtual_copy, { photo_uuid = source.uuid })
+check('copy whose master matches neither source nor source master is rejected',
+  not ok and tostring(result):match('master mismatch') ~= nil, tostring(result))
+catalog.returnBadMaster = false
+
 ok, result = pcall(Commands.export_preview, { photo_uuid = source.uuid, long_edge = 600, output_dir = '/tmp/f1' })
 check('export completes in mock', ok, tostring(result))
 check('long edge uses SDK LR_size_maxHeight', exportSettings and exportSettings.LR_size_maxHeight == 600,
@@ -166,7 +206,7 @@ check('legacy LR_size_longEdge is absent', exportSettings and exportSettings.LR_
   exportSettings and tostring(exportSettings.LR_size_longEdge))
 exportMissing = true
 ok, result = pcall(Commands.export_preview, { photo_uuid = source.uuid, long_edge = 600, output_dir = '/tmp/f1' })
-check('export missing output is rejected', not ok and tostring(result):match('expected file is missing') ~= nil,
+check('export missing output is rejected', not ok and tostring(result):match('rendered_file_missing') ~= nil,
   tostring(result))
 
 exportMissing = false

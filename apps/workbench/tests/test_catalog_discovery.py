@@ -54,8 +54,6 @@ class CatalogDiscoveryPathAliasTestCase(unittest.TestCase):
             self.assertNotIn(temporary, str(result))
 
     def test_active_catalog_alias_is_attached_to_the_discovered_file(self):
-        if os.name == "nt":
-            self.skipTest("directory symlink creation is not available on every Windows host")
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             real_root = base / "real"

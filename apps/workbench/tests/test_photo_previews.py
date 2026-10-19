@@ -407,7 +407,7 @@ class TestPreviewPinning(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.registry = TargetRegistry(self.root / "targets.json")
+        self.registry = TargetRegistry(self.root / "config.json")
         self.remote = self.registry.add(label="remote", base="http://10.0.0.4:17777",
                                         catalog_id="studio.lrcat", access_mode="full",
                                         catalog_identity=REMOTE_CATALOG_IDENTITY)

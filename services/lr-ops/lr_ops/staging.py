@@ -38,6 +38,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from .sidecar import SIDECAR_COMMANDS
 
 # Commands whose params carry a caller-supplied path today. Each is replaced by a
 # bridge-resolved path at dispatch time. Keys are the *caller-facing* handle; the
@@ -238,6 +239,10 @@ class Staging:
             ]
             return resolved
         resolved = dict(params)
+        if command in SIDECAR_COMMANDS:
+            # New Lua must not send private Catalog-resolved paths to a service
+            # that lacks sidecar finalization/redaction support.
+            resolved["_sidecar_protocol"] = 1
         if command in INPUT_HANDLES:
             handle_key, param_key = INPUT_HANDLES[command]
             handle = resolved.pop(handle_key, None)

@@ -97,14 +97,16 @@ local function baseUrl()
     return 'http://' .. Bridge.host .. ':' .. tostring(Bridge.port)
 end
 
-local function postResult(jobId, payload)
+local function postResult(jobId, payload, generation)
     local ok, err = ypcall(function()
         LrHttp.post(baseUrl() .. '/jobs/' .. jobId .. '/result', Json.encode(payload), headers())
     end)
     if not ok then
         -- Nothing else can be done from inside Lightroom; the service will
         -- time the job out and the next poll keeps working.
-        State.bridgeLastError = 'result post failed: ' .. tostring(err)
+        if State.bridgeGeneration == generation then
+            State.bridgeLastError = 'result post failed: ' .. tostring(err)
+        end
         log('postResult FAILED for ' .. jobId .. ': ' .. tostring(err))
     else
         log('postResult ok for ' .. jobId .. ' (ok=' .. tostring(payload.ok) .. ')')
@@ -115,9 +117,9 @@ end
 -- defined below it.
 local executeBatch
 
-local function executeJob(job)
+local function executeJob(job, generation)
     if job.command == 'command_batch' then
-        executeBatch(job)
+        executeBatch(job, generation)
         return
     end
     local command = Commands[job.command]
@@ -125,7 +127,7 @@ local function executeJob(job)
         postResult(job.job_id, {
             ok = false,
             error = 'Unknown command: ' .. tostring(job.command),
-        })
+        }, generation)
         return
     end
     log('executing ' .. tostring(job.command) .. ' (' .. job.job_id .. ')')
@@ -143,10 +145,10 @@ local function executeJob(job)
         return command(params)
     end)
     if ok then
-        postResult(job.job_id, { ok = true, data = result })
+        postResult(job.job_id, { ok = true, data = result }, generation)
     else
         log('command error: ' .. tostring(result))
-        postResult(job.job_id, { ok = false, error = tostring(result) })
+        postResult(job.job_id, { ok = false, error = tostring(result) }, generation)
     end
 end
 
@@ -154,14 +156,14 @@ end
 -- interleave between its commands. The catalog binding is checked ONCE from
 -- the job-level params -- per-entry expected_catalog fields are meaningless,
 -- the batch either runs against the right catalog or not at all.
-executeBatch = function(job)
+executeBatch = function(job, generation)
     local params = job.params or {}
     local entries = params.commands
     if type(entries) ~= 'table' or #entries == 0 then
         postResult(job.job_id, {
             ok = false,
             error = 'command_batch requires a non-empty commands array.',
-        })
+        }, generation)
         return
     end
     log('executing batch of ' .. tostring(#entries) .. ' commands (' .. job.job_id .. ')')
@@ -176,7 +178,7 @@ executeBatch = function(job)
     end)
     if not ok then
         log('batch error: ' .. tostring(outcome))
-        postResult(job.job_id, { ok = false, error = tostring(outcome) })
+        postResult(job.job_id, { ok = false, error = tostring(outcome) }, generation)
         return
     end
     if outcome.failed_at_index then
@@ -186,9 +188,9 @@ executeBatch = function(job)
             error = outcome.error,
             failed_at_index = outcome.failed_at_index,
             results_so_far = outcome.results,
-        })
+        }, generation)
     else
-        postResult(job.job_id, { ok = true, data = { results = outcome.results } })
+        postResult(job.job_id, { ok = true, data = { results = outcome.results } }, generation)
     end
 end
 
@@ -209,68 +211,101 @@ local function pollOnce(generation)
     return job
 end
 
-function Bridge.start()
-    if State.bridgeRunning then
+local function taskAlive(task)
+    -- A scheduled task has no thread until Lightroom first enters it. Once it
+    -- has started, the coroutine is the liveness evidence, not a sticky bool.
+    return task and (not task.thread or coroutine.status(task.thread) ~= 'dead')
+end
+
+local function releaseOperation(task)
+    if State.bridgeOperationTask == task then
+        State.bridgeOperationTask = nil
+        State.bridgeOperationGeneration = nil
+    end
+end
+
+function Bridge.start(forceRestart)
+    if not forceRestart and State.bridgeRunning and taskAlive(State.bridgeTask) then
         return
     end
     State.bridgeGeneration = (State.bridgeGeneration or 0) + 1
     local generation = State.bridgeGeneration
+    local task = { generation = generation }
     local function isCurrent()
-        return State.bridgeRunning and State.bridgeGeneration == generation
+        return State.bridgeRunning and State.bridgeTask == task
+            and State.bridgeGeneration == generation
     end
+    State.bridgeTask = task
     State.bridgeRunning = true
     State.bridgeLastError = nil
     LrTasks.startAsyncTask(function()
         if not isCurrent() then return end
+        task.thread = coroutine.running()
         -- log() sends HTTP as well as writing the local logger. Initialization
         -- must schedule the task before any yielding network operation.
-        log('bridge started, polling ' .. baseUrl())
-        while isCurrent() do
-            if State.bridgeOperationGeneration and State.bridgeOperationGeneration ~= generation then
-                -- Wait for the old generation's yielding claim/command/result
-                -- boundary before claiming another job. No writes overlap.
-                LrTasks.sleep(Bridge.pollIntervalSec)
-            else
-                State.bridgeOperationGeneration = generation
-                local ok, err = ypcall(function()
-                    local job = pollOnce(generation)
-                    if job then
-                        -- A claim may yield across stop/start. Finish it through
-                        -- Safety exactly once before retiring; never replay it.
-                        executeJob(job)
-                    end
-                end)
-                if State.bridgeOperationGeneration == generation then
-                    State.bridgeOperationGeneration = nil
-                end
-                if not isCurrent() then break end
-                if not ok then
-                    State.bridgeLastError = tostring(err)
-                    log('poll error: ' .. tostring(err))
-                    LrTasks.sleep(2)
-                else
+        local ok, err = ypcall(function()
+            log('Lightroom polling started: ' .. baseUrl())
+            while isCurrent() do
+                local owner = State.bridgeOperationTask
+                if owner and owner ~= task and taskAlive(owner) then
+                    -- Wait for the old generation's yielding claim/command/result
+                    -- boundary before claiming another job. No writes overlap.
                     LrTasks.sleep(Bridge.pollIntervalSec)
+                else
+                    -- A canceled/dead task cannot keep a future lifecycle blocked.
+                    -- Unknown claimed writes are not resubmitted here.
+                    if owner and owner ~= task then releaseOperation(owner) end
+                    State.bridgeOperationTask = task
+                    State.bridgeOperationGeneration = generation
+                    local ok, err = ypcall(function()
+                        local job = pollOnce(generation)
+                        if job then
+                            -- A claim may yield across stop/start. Finish it through
+                            -- Safety exactly once before retiring; never replay it.
+                            executeJob(job, generation)
+                        end
+                    end)
+                    releaseOperation(task)
+                    if not isCurrent() then break end
+                    if not ok then
+                        State.bridgeLastError = tostring(err)
+                        log('poll error: ' .. tostring(err))
+                        LrTasks.sleep(2)
+                    else
+                        LrTasks.sleep(Bridge.pollIntervalSec)
+                    end
                 end
             end
-        end
-        if State.bridgeGeneration == generation then
-            log('bridge stopped')
+        end)
+        releaseOperation(task)
+        if State.bridgeTask == task then
+            State.bridgeTask = nil
+            State.bridgeRunning = false
+            if not ok then State.bridgeLastError = tostring(err) end
+            log('Lightroom polling stopped' .. (ok and '' or ': ' .. tostring(err)))
         end
     end)
 end
 
 function Bridge.stop()
     State.bridgeRunning = false
+    State.bridgeGeneration = (State.bridgeGeneration or 0) + 1
+    State.bridgeTask = nil
+    -- Keep a live in-flight operation's token until it reaches its result
+    -- boundary; a replacement poller must not execute writes in parallel.
+    if State.bridgeOperationTask and not taskAlive(State.bridgeOperationTask) then
+        releaseOperation(State.bridgeOperationTask)
+    end
 end
 
 function Bridge.statusLine()
-    if not State.bridgeRunning then
-        return 'Bridge stopped.'
+    if not State.bridgeRunning or not taskAlive(State.bridgeTask) then
+        return 'Lightroom polling stopped.'
     end
     if State.bridgeLastError then
-        return 'Bridge running. Last error: ' .. State.bridgeLastError
+        return 'Lightroom polling. Last error: ' .. State.bridgeLastError
     end
-    return 'Bridge running, polling ' .. baseUrl()
+    return 'Lightroom polling ' .. baseUrl()
 end
 
 return Bridge

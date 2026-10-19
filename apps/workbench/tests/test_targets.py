@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from lr_ops.configuration import defaults
 from workbench.studio.engine import Studio
 from workbench.targets import (DEFAULT_TARGET_ID, LrOpsRouter, Target,
                                TargetError, TargetRegistry, is_loopback_base)
@@ -75,7 +76,7 @@ class RegistryTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "targets.json"
+        self.path = Path(self.tmp.name) / "config.json"
 
     def registry(self, seed_base=None, env=None):
         with mock.patch.dict(os.environ, env or {}, clear=False):
@@ -119,32 +120,24 @@ class TestTargetRegistrySeed(RegistryTestCase):
         self.assertFalse(registry.persisted())
         self.assertFalse(self.path.exists())
 
-    def test_corrupt_registry_falls_back_to_seed(self):
+    def test_corrupt_config_is_rejected_without_seed_fallback(self):
         self.path.write_text("{ this is not json", encoding="utf-8")
-        registry = self.registry(seed_base="http://fallback:17777")
-        self.assertEqual(registry.active.base, "http://fallback:17777")
+        with self.assertRaises(TargetError):
+            self.registry(seed_base="http://fallback:17777")
 
-    def test_unusable_rows_are_skipped_not_fatal(self):
-        self.path.write_text(json.dumps({
-            "active": "lab",
-            "targets": [
-                {"id": "broken", "base": "ftp://nope"},
-                {"id": "lab", "label": "实验室", "base": "http://lab:17777"},
-            ],
-        }), encoding="utf-8")
-        registry = self.registry()
-        self.assertEqual(registry.active_id, "lab")
-        self.assertEqual([t.id for t in registry.list()], ["lab"])
+    def test_invalid_target_rejects_the_complete_config(self):
+        data = defaults()
+        data["targets"]["targets"][0]["base"] = "ftp://nope"
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(TargetError):
+            self.registry()
 
-    def test_old_registry_rows_migrate_to_full_access(self):
-        self.path.write_text(json.dumps({
-            "active": "old",
-            "targets": [{"id": "old", "label": "old", "base": "http://old:17777"}],
-        }), encoding="utf-8")
-        target = self.registry().active
-        self.assertEqual(target.access_mode, "full")
-        self.assertIsNone(target.catalog_identity)
-
+    def test_old_registry_file_is_not_imported(self):
+        legacy = self.path.with_name("targets.json")
+        legacy.write_text(json.dumps({"active": "old", "targets": [
+            {"id": "old", "label": "old", "base": "http://old:17777"}]}))
+        self.assertEqual(self.registry().active.id, "local")
+        self.assertFalse(self.path.exists())
 
 class TestTargetRegistryWrites(RegistryTestCase):
     def test_add_persists_and_survives_reload(self):
@@ -178,7 +171,7 @@ class TestTargetRegistryWrites(RegistryTestCase):
         added = registry.add(label="remote", base="http://10.0.0.4:17777")
         registry.select(added.id)
         self.assertEqual(registry.active_id, added.id)
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["active"], added.id)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["targets"]["active"], added.id)
         self.assertEqual(self.registry().active_id, added.id)
 
     def test_remove_refuses_the_default(self):
@@ -187,14 +180,12 @@ class TestTargetRegistryWrites(RegistryTestCase):
             registry.remove(DEFAULT_TARGET_ID)
 
     def test_remove_refuses_the_only_remaining_target(self):
-        # Reachable only from a hand-written file: the seed is always default.
-        self.path.write_text(json.dumps({
-            "active": "solo",
-            "targets": [{"id": "solo", "label": "solo", "base": "http://solo:17777"}],
-        }), encoding="utf-8")
-        registry = self.registry()
+        data = defaults()
+        data["targets"] = {"active": "solo", "targets": [
+            Target(id="solo", label="solo", base="http://solo:17777").to_json()]}
+        self.path.write_text(json.dumps(data), encoding="utf-8")
         with self.assertRaises(TargetError):
-            registry.remove("solo")
+            self.registry().remove("solo")
 
     def test_removing_the_active_target_falls_back_to_another(self):
         registry = self.registry()
@@ -225,7 +216,7 @@ class TestRouter(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = Path(self.tmp.name) / "targets.json"
+        self.path = Path(self.tmp.name) / "config.json"
         self.registry = TargetRegistry(self.path)
         self.router = LrOpsRouter(self.registry, client_factory=RecordingClient)
 
@@ -247,6 +238,40 @@ class TestRouter(unittest.TestCase):
         self.registry.select(DEFAULT_TARGET_ID)
         self.assertIs(self.router._current(), first)   # not rebuilt
         self.assertIsNot(remote, first)
+
+    def test_unconfigured_target_never_inherits_another_bridge_credential(self):
+        fixture_token = "fixture-bridge-credential"
+        with mock.patch.dict(os.environ, {"LR_XMP_MIMIC_LOCAL_TOKEN": fixture_token}):
+            registry = TargetRegistry(self.path)
+            remote = registry.add("remote", "http://remote.invalid:17777")
+            registry.select(remote.id)
+            router = LrOpsRouter(registry)
+            first = router._current()
+            self.assertIsNone(first.token)
+            registry.update(remote.id, token=fixture_token)
+            authenticated = router._current()
+            self.assertIsNot(authenticated, first)
+            self.assertEqual(authenticated.token, fixture_token)
+            registry.update(remote.id, token="")
+            self.assertIsNone(router._current().token)
+
+    def test_persisted_config_wins_over_invalid_inherited_mode(self):
+        self.registry.select(DEFAULT_TARGET_ID)
+        with mock.patch.dict(os.environ, {"LR_XMP_MIMIC_ACCESS_MODE": "invalid"}):
+            self.assertEqual(TargetRegistry(self.path).active.access_mode, "full")
+
+    def test_request_validates_and_routes_the_same_target_snapshot(self):
+        bound = self.registry.bind_active_catalog(
+            access_mode="full", catalog_identity="catalog-md5-v1:bound", catalog_id="bound.lrcat")
+        other = Target(id="other", label="other", base="http://other.invalid:17777")
+        with mock.patch.object(TargetRegistry, "active", new_callable=mock.PropertyMock,
+                               side_effect=[bound, other]) as active:
+            result = self.router.run("get_develop", {
+                "expected_catalog_identity": bound.catalog_identity,
+                "expected_access_mode": bound.access_mode,
+            })
+        self.assertEqual(active.call_count, 1)
+        self.assertEqual(result["answered_by"], bound.base)
 
     def test_pin_stays_on_target_after_selection_changes(self):
         pinned = self.router.pin()
@@ -321,7 +346,7 @@ class TestEpisodeTargetBinding(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        registry = TargetRegistry(Path(self.tmp.name) / "targets.json")
+        registry = TargetRegistry(Path(self.tmp.name) / "config.json")
         self.registry = registry
         self.router = LrOpsRouter(registry, client_factory=RecordingClient)
         self.studio = Studio(Path(self.tmp.name), self.router)

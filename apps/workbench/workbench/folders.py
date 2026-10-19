@@ -10,7 +10,7 @@ Five rules that are not negotiable:
 
 1. **Default full host access.** Without an operator config, every filesystem
    root visible to the Runtime OS account is addressable. An
-   explicit ``folder-library`` config opts into a restricted root list.
+   ``config.json`` folders.mode=restricted opts into a restricted root list.
 2. **Containment before existence.** Every path used for a read is passed
    through ``Path.resolve()`` (which also collapses symlinks) and compared
    against the resolved root *before* anything is stat()ed. Checking existence
@@ -43,6 +43,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from lr_ops.configuration import ConfigStore, ConfigError, for_workbench
 
 SCHEMA_VERSION = "folder-preview-v1"
 
@@ -73,10 +74,6 @@ DENY_DIR_NAMES = frozenset({
     ".fseventsd", ".spotlight-v100", ".documentrevisions-v100", ".temporaryitems",
 })
 
-CONFIG_ENV = "LR_XMP_MIMIC_FOLDER_CONFIG"
-CONFIG_BASENAMES = ("folder-library.yaml", "folder-library.yml", "folder-library.json")
-DEFAULT_CONFIG_BASENAME = "folder-library.yaml"
-LEGACY_NAME = "folder-roots.json"
 STATE_NAME = "folder-library-state.json"
 
 KEY_RE = re.compile(r"\A[0-9a-f]{20}\Z")
@@ -379,101 +376,13 @@ def _tiff_facts(content: bytes, max_entries: int = 512):
 # configuration
 
 
-def _strip_comment(line: str) -> str:
-    if line.strip().startswith("#"):
-        return ""
-    marker = line.find(" #")
-    if marker != -1:
-        line = line[:marker]
-    return line.rstrip()
-
-
-def _scalar(text: str):
-    lowered = text.strip().lower()
-    if lowered in ("true", "yes", "on"):
-        return True
-    if lowered in ("false", "no", "off"):
-        return False
-    if lowered in ("null", "~", ""):
-        return None
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        return text[1:-1]
-    if text.startswith("[") and text.endswith("]"):
-        inner = text[1:-1].strip()
-        if not inner:
-            return []
-        return [_scalar(part) for part in inner.split(",")]
-    return text.strip()
-
-
-def _minimal_yaml(text: str, path: Path) -> dict:
-    """A deliberately tiny YAML reader for exactly the documented shape.
-
-    ``requirements.txt`` lists only Pillow and numpy, so this module must be
-    able to read the shipped example without a YAML package. Rather than
-    guessing at anything more interesting than ``key: value`` and ``key:``
-    followed by ``- item`` lines, anything outside that subset is an error: a
-    config file we half-understood is worse than one we refused.
-    """
-    result: dict = {}
-    current: str | None = None
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = _strip_comment(raw)
-        if not line.strip():
-            continue
-        stripped = line.strip()
-        if stripped.startswith("-"):
-            if current is None or not isinstance(result.get(current), list):
-                raise FolderError(f"{path.name} 第 {number} 行：列表项不属于任何键。")
-            result[current].append(_scalar(stripped[1:].strip()))
-            continue
-        if ":" not in line:
-            raise FolderError(
-                f"{path.name} 第 {number} 行不是 key: value 形式。内置解析器只支持 "
-                "roots / extensions / recursive；请改用 JSON，或安装 PyYAML。")
-        key, _, value = line.partition(":")
-        key = key.strip()
-        if not key or " " in key:
-            raise FolderError(f"{path.name} 第 {number} 行：键名不合法。")
-        value = value.strip()
-        if value == "":
-            result[key] = []
-            current = key
-        else:
-            result[key] = _scalar(value)
-            current = None
-    return result
-
-
-def _parse_config_text(text: str, path: Path) -> dict:
-    try:
-        data = json.loads(text)
-    except ValueError:
-        data = None
-    if data is None:
-        try:
-            import yaml
-        except ImportError:
-            data = _minimal_yaml(text, path)
-        else:
-            try:
-                data = yaml.safe_load(text)
-            except yaml.YAMLError as exc:
-                raise FolderError(f"{path.name} 不是合法的 YAML：{exc}") from exc
-    if data is None:
-        data = {}
-    if not isinstance(data, dict):
-        raise FolderError(f"{path.name} 的顶层必须是一个映射（roots / extensions / recursive）。")
-    return data
-
-
 @dataclass(frozen=True)
 class FolderConfig:
     roots: tuple[str, ...]
     extensions: tuple[str, ...]
     recursive: bool
     path: Path
-    source: str          # env | primary | legacy | default
+    source: str          # config | default
     error: str | None = None
 
     def root_entries(self) -> list[tuple[str, Path]]:
@@ -508,71 +417,40 @@ class FolderLibrary:
 
     def __init__(self, root, config_path=None):
         self.root = Path(root)
-        self.cache = self.root / "folder-cache"
+        self.config_store = ConfigStore(config_path) if config_path else for_workbench(self.root)
+        self.cache = self.config_store.paths()["cache"] / "workbench" / "folders"
         self.cache.mkdir(parents=True, exist_ok=True)
         self.entry_dir = self.cache / "index"
         self.legacy_index_path = self.cache / "index.json"
         self.state_path = self.root / STATE_NAME
-        self._config_path = Path(config_path) if config_path else None
-        self._config_memo: tuple | None = None
+        self._config_path = self.config_store.path
         self._legacy_memo: tuple | None = None
 
     # ---- configuration ----------------------------------------------------
 
     def default_config_path(self) -> Path:
-        if self._config_path is not None:
-            return self._config_path
-        for name in CONFIG_BASENAMES:
-            candidate = self.root / name
-            if candidate.is_file():
-                return candidate
-        return self.root / DEFAULT_CONFIG_BASENAME
+        return self.config_store.path
 
     def config(self) -> FolderConfig:
-        path = self.default_config_path()
-        key = _file_key(path)
-        if self._config_memo and self._config_memo[0] == key:
-            return self._config_memo[1]
-        config = self._load_config(path)
-        self._config_memo = (key, config)
-        return config
-
-    def _load_config(self, path: Path) -> FolderConfig:
-        env_path = os.environ.get(CONFIG_ENV)
-        if env_path:
-            target = Path(env_path).expanduser()
-            if not target.is_file():
-                return FolderConfig((), DEFAULT_EXTENSIONS, False, target, "env",
-                                    f"环境变量 {CONFIG_ENV} 指向的配置文件不存在：{target.name}")
-            return self._config_from_file(target, source="env")
-        if path.is_file():
-            return self._config_from_file(path, source="primary")
-        legacy = self.root / LEGACY_NAME
-        if legacy.is_file():
-            earlier = self._config_from_file(legacy, source="legacy", legacy_only=True)
-            # Extensions and recursion were not part of the legacy file, so the
-            # defaults apply; the first write migrates roots into the new file.
-            return FolderConfig(earlier.roots, DEFAULT_EXTENSIONS, False, path,
-                                "legacy", earlier.error)
-        return FolderConfig(_default_access_roots(), DEFAULT_EXTENSIONS, False,
-                            path, "default", None)
-
-    def _config_from_file(self, path: Path, *, source: str, legacy_only: bool = False) -> FolderConfig:
+        path = self.config_store.path
         try:
-            text = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return FolderConfig((), DEFAULT_EXTENSIONS, False, path, source,
-                                f"配置文件无法读取：{path.name}（{exc.strerror or exc}）")
-        try:
-            raw = _parse_config_text(text, path)
-        except FolderError as exc:
-            return FolderConfig((), DEFAULT_EXTENSIONS, False, path, source, str(exc))
-        if legacy_only:
-            raw = {"roots": raw.get("roots", [])}
-        # ``_``-prefixed keys are comments. JSON has no comment syntax, and a
-        # commented example is worth more than a strictness point.
-        unknown = {k for k in raw if k not in ("roots", "extensions", "recursive")
-                   and not (isinstance(k, str) and k.startswith("_"))}
+            section = self.config_store.read()["folders"]
+        except ConfigError as exc:
+            return FolderConfig((), DEFAULT_EXTENSIONS, False, path, "config", str(exc))
+        if section["mode"] == "full":
+            try:
+                extensions = normalize_extensions(section["extensions"]) if section["extensions"] is not None else DEFAULT_EXTENSIONS
+            except FolderError as exc:
+                return FolderConfig((), DEFAULT_EXTENSIONS, False, path, "config", str(exc))
+            return FolderConfig(_default_access_roots(), extensions, section["recursive"],
+                                path, "default", None)
+        raw = {key: value for key, value in section.items() if key != "mode"}
+        if raw["extensions"] is None:
+            raw.pop("extensions")
+        return self._config_from_values(raw, path, source="config")
+
+    def _config_from_values(self, raw, path, *, source):
+        unknown = {k for k in raw if k not in ("roots", "extensions", "recursive")}
         if unknown:
             return FolderConfig((), DEFAULT_EXTENSIONS, False, path, source,
                                 f"{path.name} 含未知配置项：{', '.join(sorted(unknown))}；"
@@ -652,7 +530,7 @@ class FolderLibrary:
         if config.error:
             raise FolderError(config.error)
         if not config.roots:
-            raise FolderError("当前 folder-library 配置没有允许访问的目录。")
+            raise FolderError("当前 config.json 的 folders 配置没有允许访问的目录。")
         return config
 
     def _match_root(self, resolved: Path, config: FolderConfig):

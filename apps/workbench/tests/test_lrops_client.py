@@ -83,6 +83,31 @@ class TestLrOpsClient(unittest.TestCase):
             client.run("apply_candidate")
         self.assertEqual(len(client.requests), 2)
 
+    def test_submission_callback_records_id_before_polling(self):
+        client = FakeClient("done", result={"ok": True, "data": {"results": []}})
+        captured = []
+        def submitted(job_id):
+            captured.append((job_id, list(client.requests)))
+        client.run("set_photo_marks", on_submitted=submitted)
+        self.assertEqual([("job-1", [("POST", "/jobs")])], captured)
+        self.assertEqual([("POST", "/jobs"), ("GET", "/jobs/job-1")], client.requests)
+
+    def test_callback_failure_does_not_poll_or_submit_again(self):
+        client = FakeClient("done", result={"ok": True})
+        def failed(_):
+            raise OSError("journal unavailable after submission")
+        with self.assertRaisesRegex(OSError, "journal unavailable"):
+            client.run("set_photo_marks", on_submitted=failed)
+        self.assertEqual([("POST", "/jobs")], client.requests)
+
+    def test_job_recovery_only_reads_a_bounded_handle(self):
+        client = FakeClient("done", result={"ok": True})
+        self.assertEqual("done", client.get_job("abc-123")["status"])
+        for job_id in ("", "../jobs", "abc?x", "a" * 129):
+            with self.assertRaises(ValueError):
+                client.get_job(job_id)
+        self.assertEqual([("GET", "/jobs/abc-123")], client.requests)
+
     def test_stable_thumbnail_marker_becomes_dedicated_error(self):
         client = FakeClient("failed", result={
             "ok": False,

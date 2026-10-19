@@ -17,12 +17,17 @@ import sys
 from pathlib import Path
 
 from workbench_mcp import __version__
+from workbench_mcp.refresh import inspect_generation
 from workbench_mcp.prompt_loader import load_runtime_operator_prompt
+from workbench_mcp.local_media import add_local_image_references
 
 # Reuse the protocol-neutral Runtime package in this repository.
 _WORKBENCH_APP = Path(__file__).resolve().parents[2] / "workbench"
 if str(_WORKBENCH_APP) not in sys.path:
     sys.path.insert(0, str(_WORKBENCH_APP))
+_LROPS_SERVICE = Path(__file__).resolve().parents[3] / "services" / "lr-ops"
+if str(_LROPS_SERVICE) not in sys.path:
+    sys.path.insert(0, str(_LROPS_SERVICE))
 
 from workbench.runtime import Workbench, build_workbench  # noqa: E402
 from workbench.folders import FolderError  # noqa: E402
@@ -32,6 +37,7 @@ from workbench.artifacts import (  # noqa: E402
 )
 from workbench.lrops import LrOpsError  # noqa: E402
 from workbench.store import StoreError  # noqa: E402
+from workbench.targets import TargetError  # noqa: E402
 from workbench.configuration_help import CONFIG_TOPICS  # noqa: E402
 
 from workbench_mcp.session_tools import EXPORT_FORMATS, SessionTools  # noqa: E402
@@ -65,10 +71,104 @@ CANONICAL_UUID_PATTERN = (
     "[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 
+MARKS_PATCH_SCHEMA = {
+    "type": "object", "additionalProperties": False, "minProperties": 1,
+    "properties": {
+        "rating": {"type": "integer", "minimum": 0, "maximum": 5},
+        "flag": {"type": "string", "enum": ["pick", "unflagged", "reject"]},
+        "color_label": {"type": "string", "enum": ["none", "red", "yellow", "green", "blue", "purple"]},
+    },
+}
+
+SIDECAR_PROPERTIES = {
+    "photo_uuid": {"type": "string", "minLength": 1, "maxLength": 256},
+    "action": {"type": "string", "default": "inspect"},
+    "confirm_xmp_mode": {"type": "boolean", "default": False},
+    "expected_token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "settings": {"type": "object", "additionalProperties": {"type": ["number", "boolean", "string"]}},
+}
+
 TOOLS = [
     {
+        "name": "trlr_refresh_mcp",
+        "description": "Refresh this MCP connection's Runtime worker from the active installed generation, or inspect loaded versus active source fingerprints. Uses a stable stdio supervisor, verifies the candidate before replacement and preserves the previous worker on failure. Serial requests finish before refresh; it never stops the shared Bridge/Lightroom, replays jobs, changes credentials or installs/downloads software. Returns actual version, loaded source and current Runtime instructions, then requests tool rediscovery with tools/list_changed. Client cache refresh is not guaranteed; a client ignoring notifications still needs official reconnect. Only perform refresh when requested by the user. No Catalog authorization is needed for this MCP lifecycle operation. Direct unsupervised adapters return reconnect_required.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+                        "properties": {"action": {"type": "string", "enum": ["inspect", "refresh"], "default": "refresh"}}},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                        "idempotentHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "trlr_native_mask",
+        "description": "PREFERRED mask path: native Lightroom Lua SDK masks, without Computer Use or XMP reload. Whenever the user asks to add, edit, inspect or refine a mask on a virtual copy (e.g. an Episode version), use this tool first — no explicit SDK-path declaration is required; a plain 'use/create a mask' request is enough. Only fall back to the XMP mask tool for explicit XMP-mode work on an authorized RAW master, or to Lightroom UI guidance for mask shapes outside subject/sky/background (brush/radial/gradient). inspect returns current masks, segmentation data presence and a snapshot token. create uses LrDevelopController.createNewMask once, waits for a new correction ID and real AI geometry, then applies optional Local* adjustments by that exact correction. update edits an existing correction; recompute requests native updateAISettings for pending AI descriptors. Writes REQUIRE an isolated virtual copy, fresh expected_token and unique request_id; master writes are refused. Supported AI mask_type: subject, sky, background. Supported Local* keys (exact names; note the 2012 suffixes): LocalExposure2012, LocalContrast2012, LocalHighlights2012, LocalShadows2012, LocalWhites2012, LocalBlacks2012, LocalClarity2012, LocalDehaze, LocalTexture, LocalSaturation, LocalSharpness, LocalLuminanceNoise, LocalMoire, LocalDefringe, LocalTemperature, LocalTint. Values are finite numbers in native Camera Raw storage units, without UI-unit conversion; use inspect readback as the scale reference. Restores module/source/selection when still owned; user interference stops the operation. Checks local readback and preservation of global settings and other masks. Pending/unknown results must not be replayed. Segmentation data is not proof of accurate coverage: inspect a fresh preview.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["photo_uuid"],
+                        "properties": {
+                            "photo_uuid": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "action": {"type": "string", "enum": ["inspect", "create", "update", "recompute"], "default": "inspect"},
+                            "mask_type": {"type": "string", "enum": ["subject", "sky", "background"]},
+                            "correction_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "settings": {"type": "object", "additionalProperties": {"type": "number"}},
+                            "expected_token": {"type": "string", "pattern": "^native-mask-md5-v1:[0-9a-f]{32}$"},
+                            "request_id": {"type": "string", "minLength": 1, "maxLength": 128}}},
+    },
+    {
+        "name": "trlr_update_xmp_sidecar",
+        "description": "Inspect, patch or restore the XMP sidecar of an explicitly authorized proprietary RAW master. Separate from Episode editing: virtual copies share their master's file and are refused. inspect is read-only and returns a token covering XMP, ACR and current Catalog settings. update/restore require explicit user XMP-mode authorization, confirm_xmp_mode=true, a fresh expected_token and unique request_id; repeated request IDs recover the original Bridge job. Saves byte backups and Develop snapshot. Native metadata must be saved first to preserve current adjustments. File write is not Catalog application: returns reload-required and Agent Computer Use guidance. Do not replay unknown writes. restore uses a returned backup_id and still needs metadata reload.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["photo_uuid"],
+                        "properties": {**SIDECAR_PROPERTIES,
+                                       "action": {"type": "string", "enum": ["inspect", "update", "restore"], "default": "inspect"},
+                                       "backup_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN}}},
+    },
+    {
+        "name": "trlr_apply_mask",
+        "description": "Master-only XMP mask path: create, edit, inspect or verify a mask through its XMP on an explicitly authorized RAW master. NOT the default mask route — for masks on a virtual copy use trlr_native_mask first; this tool refuses virtual copies and requires explicit XMP-mode authorization. inspect returns correction IDs, local settings and actual Catalog/XMP components. create accepts one explicit native MaskGroupBasedCorrections XML template, optional name and Local* settings; mask_type alone cannot synthesize semantic AI segmentation/ACR bytes and returns structured Computer Use fallback with the Masking button location. Creation of an XML descriptor is NOT proof of a working mask. update modifies one exact correction_id while preserving other masks and metadata. Writes address a RAW master, require explicit XMP-mode user authorization, confirm_xmp_mode=true, fresh expected_token and unique request_id, and preserve backup bytes. After native metadata reload, verify checks Catalog mask presence, component errors and requested Local* parameters; coverage stays unverified and the Agent must inspect a fresh preview. Runtime never invokes Computer Use automatically.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["photo_uuid"],
+                        "properties": {**SIDECAR_PROPERTIES,
+                                       "action": {"type": "string", "enum": ["inspect", "create", "update", "verify"], "default": "inspect"},
+                                       "correction_id": {"type": "string", "minLength": 1},
+                                       "name": {"type": "string", "maxLength": 4096},
+                                       "mask_type": {"type": "string", "maxLength": 128},
+                                       "mask_xml": {"type": "string", "maxLength": 8388608}}},
+    },
+    {
+        "name": "trlr_get_photo_marks",
+        "description": "Read ratings, pick/reject flags, colors and raw label text for 1–200 explicit photo UUIDs in the authorized Catalog. Returns per-photo snapshots and marks_token for protected writes. Treat every existing mark, including custom/white labels and previous Agent marks, as protected. No Develop, selection or Catalog content changes.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["photo_uuids"],
+                        "properties": {"photo_uuids": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": True,
+                                                     "items": {"type": "string", "minLength": 1, "maxLength": 256}}}},
+    },
+    {
+        "name": "trlr_set_photo_marks",
+        "description": "Batch-write ratings, flags or colors on explicitly named photos; never Develop. skip_marked_photos (default) skips any already-marked photo; fill_empty_fields preserves existing fields and fills only absent ones. Requires marks_token from the preceding read and a unique request_id. Returns operation_id, status, counts and only skipped/exceptional items; full evidence stays in Runtime. Reject never deletes. Repeated request_id deduplicates. User requests to mark an explicit scope authorize this write; inspection alone does not.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["items", "request_id"],
+                        "properties": {
+                            "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                            "protection_mode": {"type": "string", "enum": ["skip_marked_photos", "fill_empty_fields"], "default": "skip_marked_photos"},
+                            "items": {"type": "array", "minItems": 1, "maxItems": 200, "items": {
+                                "type": "object", "additionalProperties": False,
+                                "required": ["photo_uuid", "expected_marks_token", "patch"],
+                                "properties": {"photo_uuid": {"type": "string", "minLength": 1, "maxLength": 256},
+                                               "expected_marks_token": {"type": "string", "minLength": 1, "maxLength": 4096},
+                                               "patch": MARKS_PATCH_SCHEMA}}}}},
+    },
+    {
+        "name": "trlr_get_mark_operation",
+        "description": "Read a stored mark operation without repeating writes. Default: compact status, counts and skipped/exceptional items. details=true returns full per-photo before/after/readback evidence for inspection. Completed records work offline; uncertain operations reconcile only their original Bridge job.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["operation_id"],
+                        "properties": {"operation_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
+                                       "details": {"type": "boolean", "default": False}}},
+    },
+    {
+        "name": "trlr_undo_photo_marks",
+        "description": "Undo one confirmed mark operation. Restores only fields it changed and preserves later user edits. Returns a new operation_id, compact counts and skipped/exceptional items. Full undo evidence stays in Runtime. No global Lightroom Undo or uncertain-write replay.",
+        "inputSchema": {"type": "object", "additionalProperties": False, "required": ["operation_id", "request_id"],
+                        "properties": {"operation_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
+                                       "request_id": {"type": "string", "minLength": 1, "maxLength": 128}}},
+    },
+    {
         "name": "trlr_get_runtime_config",
-        "description": "View current Runtime settings immediately, with configuration entry points and built-in tutorials. Call with no arguments for the redacted overview and help-topic index, or choose a topic for its step-by-step guide, effects and verification. Covers safe/full, Sandbox, Catalog, image sizes, folder access, connection, credentials, data root and execution flags. This read-only query works before Catalog binding, while authorization is blocked, and when Lightroom is disconnected; unavailable live values are marked unknown. catalog.binding_recorded reports whether the Target remembers an identity; active_identity_status reports the live observation. A null bound_catalog display name does not mean unbound, and a remembered binding does not mean authorized. catalog.access_mode.expected is the effective expected mode and does not prove it was saved; its exact source and persistence status are not reported. It never returns credentials, bridge URLs, absolute host/Catalog paths or opaque Catalog identities, and cannot write settings.",
+        "description": "View current Runtime settings immediately, with configuration entry points and built-in tutorials. Call with no arguments for the redacted overview and help-topic index, or choose a topic for its step-by-step guide, effects and verification. Covers component versions, safe/full, Sandbox, Catalog, image sizes, folder access, connection, credentials, data root and execution flags. topic=versions reports this MCP server version and live Lightroom/plugin version/build; disconnected or missing live values are null. This read-only query works before Catalog binding, while authorization is blocked, and when Lightroom is disconnected; unavailable live values are marked unknown. catalog.binding_recorded reports whether the Target remembers an identity; active_identity_status reports the live observation. A null bound_catalog display name does not mean unbound, and a remembered binding does not mean authorized. catalog.access_mode.expected is the effective expected mode and does not prove it was saved; expected_source and expected_persisted report its source and persistence status. configuration reports the config.json revision and reload rules. It never returns credentials, bridge URLs, absolute host/Catalog paths or opaque Catalog identities, and cannot write settings.",
         "inputSchema": {
             "type": "object", "additionalProperties": False,
             "properties": {
@@ -80,7 +180,7 @@ TOOLS = [
     },
     {
         "name": "trlr_get_presentation_config",
-        "description": "Read the persistent image presentation budgets for this Runtime data root. codex_preview_max_edge caps every native image block returned to Codex; edit_render_max_edge caps later Session work renders and the render size captured by newly created Episodes. Neither setting changes Lightroom develop settings or final export output.",
+        "description": "Read image presentation budgets from the presentation section of the shared config.json. codex_preview_max_edge caps every native image block returned to Codex; edit_render_max_edge caps later Session work renders and the render size captured by newly created Episodes. Neither setting changes Lightroom develop settings or final export output.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -104,8 +204,8 @@ TOOLS = [
         "description": "Check bridge reachability and the read-only live Catalog policy. "
                        "Returns the configured/active access mode, opaque Catalog identity, "
                        "safe-mode registration match, authorization status and a reason when "
-                       "blocked. An unconfigured Target requires one explicit Catalog "
-                       "confirmation before any Catalog operation. This tool cannot change "
+                       "blocked. An unconfigured Target requires binding through "
+                       "trlr_confirm_catalog under the Runtime Catalog rules before photo operations. This tool cannot change "
                        "or elevate the Lightroom access mode.",
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -116,16 +216,16 @@ TOOLS = [
     },
     {
         "name": "trlr_confirm_catalog",
-        "description": "Persist the user's Catalog binding for the active Runtime Target when the desired Catalog is already open. Call only after the user explicitly chooses and confirms the currently open Catalog. The selected opaque identity must exactly match the live plugin probe. It mirrors the plugin's current safe/full mode into targets.json without changing the plugin setting. To open another locally discovered Catalog, use trlr_switch_catalog instead. Safe mode still requires its existing Plugin Manager Sandbox registration.",
+        "description": "Persist the active Runtime Target's binding to the currently open Catalog, with authorization determined by the Runtime Catalog rules. The supplied opaque identity must exactly match a fresh live plugin probe. It mirrors the plugin's current safe/full mode into the targets section of config.json without changing the plugin setting. To open another locally discovered Catalog, use trlr_switch_catalog instead. Safe mode still requires its existing Plugin Manager Sandbox registration.",
         "inputSchema": {
             "type": "object",
             "required": ["catalog_identity", "confirm_current_catalog"],
             "additionalProperties": False,
             "properties": {
                 "catalog_identity": {"type": "string", "minLength": 1,
-                                     "description": "Identity from trlr_list_catalogs."},
+                                     "description": "Current identity from trlr_health.catalog_policy.catalog_identity or the active entry in trlr_list_catalogs."},
                 "confirm_current_catalog": {"type": "boolean", "const": True,
-                                             "description": "Must be true only after explicit user confirmation."},
+                                             "description": "True only when this binding is authorized under the Runtime Catalog rules; an existing binding conflict still requires explicit user confirmation."},
             },
         },
     },
@@ -212,7 +312,7 @@ TOOLS = [
     },
     {
         "name": "trlr_get_current_folder_previews",
-        "description": "Show one page of photos in the current Lightroom target's leaf folder. Returns path-free target/folder metadata and one native JPEG image block per available photo, in item order. Uses read-only Lightroom requestJpegThumbnail; it never runs an export session, creates a virtual copy, or imports a Catalog photo. A photo without a fast Lightroom thumbnail is reported as unavailable while the rest of the page remains usable. limit is intentionally capped to bound Codex image cost.",
+        "description": "Show one page of the current target's leaf folder, with photo names and one native JPEG image block per available photo in item order. Uses read-only requestJpegThumbnail, with no export, virtual copy or import. Missing thumbnails are reported per photo. limit bounds image cost. Local image delivery may add a display reference before each image block; the agent uses it under the Runtime reply-body rules.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -228,7 +328,7 @@ TOOLS = [
     },
     {
         "name": "trlr_get_photo_preview",
-        "description": "Get a fast read-only JPEG thumbnail for a photo already in the current authorized Catalog. Uses Lightroom requestJpegThumbnail, never creates a virtual copy or runs an export session. The requested thumbnail size is tightened to the effective returned-image edge so the bridge does not transfer unused pixels. The metadata reports embedded ICC and EXIF color-space declarations when present, but the image's actual color space and freshness remain unverified; use an episode render for strict acceptance evidence.",
+        "description": "Get a read-only requestJpegThumbnail JPEG for an authorized photo; no virtual copy or export. Returns metadata and a bounded native image block. Local image delivery may add a display reference to those exact image bytes. Use that reference and the matching photo's file_name under the Runtime reply-body rules; the tool does not render the assistant's reply. Color/freshness evidence remains in metadata.",
         "inputSchema": {
             "type": "object",
             "required": ["photo_uuid"],
@@ -380,6 +480,8 @@ def episode_tool(name, description, properties, required):
                             "required": required, "additionalProperties": False}}
 
 SID = {"episode_id": {"type": "string"}}
+SNAPSHOTS = {"include_snapshots": {"type": "boolean", "default": False,
+                                   "description": "Include full stored develop snapshots (source/baseline and per-version) and readback mismatch values. Default false uses hashed stand-ins for snapshots and bulky mismatch values. Retrieve full stored evidence with trlr_get_episode(include_snapshots=true); historical mismatch summaries cannot be expanded."}}
 WRITE = {**SID, "base_revision": {"type": "integer"}, "request_id": {"type": "string", "description": "Fresh UUID per logical action. Reuse only to retry that same action."}}
 TOOLS.extend([
     episode_tool("studio_photos", "List all photos in the current authorized Catalog and verify plugin capabilities.", {}, []),
@@ -388,8 +490,8 @@ TOOLS.extend([
                   "query": {"type": "string", "description": "Optional AND keyword search over field name, title, unit and explanation. Ignored when identifier is given."}}, []),
     episode_tool("list_parameter_variant_results", "List factual Lightroom parameter-variant render records. Each record is tied to one source baseline and render environment. The Runtime does not rank, recommend, summarize or generalize these records.",
                  {"query": {"type": "string", "description": "Optional AND search over parameter and source identifiers."}}, []),
-    episode_tool("create_episode", "Create an editing context from a master photo only; source_uuid must identify a photo with is_virtual_copy=false. Lightroom rejects a virtual copy as the source. The Episode creates its own independent virtual copies for the baseline and each edit version. The default same_capture_match mode requires reference_uuid and same_capture=true, explicitly established by the user; image dimensions do not establish alignment. mode=source_edit is the source-only execution mode: it accepts direct parameter edits and parameter-variant renders, but supplies no recipes or aesthetic choices.",
-                 {"source_uuid": {"type": "string"}, "reference_uuid": {"type": "string"}, "same_capture": {"type": "boolean"}, "mode": {"type": "string", "enum": ["same_capture_match", "source_edit"], "default": "same_capture_match"}, "intent": {"type": "string"}, "long_edge": {"type": "integer", "minimum": 256, "maximum": 2048}}, ["source_uuid"]),
+    episode_tool("create_episode", "Create an editing context from a master photo or one of its virtual copies; when the source is a virtual copy, its current develop state becomes the baseline (a virtual copy of the source is still created for rendering, so the source itself is never modified). The Episode creates its own independent virtual copies for the baseline and each edit version. The default same_capture_match mode requires reference_uuid and same_capture=true, explicitly established by the user; image dimensions do not establish alignment. mode=source_edit is the source-only execution mode: it accepts direct parameter edits and parameter-variant renders, but supplies no recipes or aesthetic choices.",
+                 {"source_uuid": {"type": "string"}, "reference_uuid": {"type": "string"}, "same_capture": {"type": "boolean"}, "mode": {"type": "string", "enum": ["same_capture_match", "source_edit"], "default": "same_capture_match"}, "intent": {"type": "string"}, "long_edge": {"type": "integer", "minimum": 256, "maximum": 2048}, **SNAPSHOTS}, ["source_uuid"]),
     episode_tool("render_parameter_variants", "Asynchronously render 1 to 5 absolute values for one parameter on an Episode. Every render starts from the same fixed current version captured when the operation begins. Poll trlr_get_episode for completion, then inspect images or call trlr_image_measure/trlr_image_compare on demand. This tool records render, readback and provenance facts only; it computes no image-response score and never recommends or selects a result. Curves use arrays as candidate values.",
                  {**WRITE, "parameter": {"type": "string"},
                   "values": {"type": "array", "minItems": 1, "maxItems": 5,
@@ -397,16 +499,16 @@ TOOLS.extend([
                                                     {"type": "array", "items": {"type": "integer"}}]}}},
                  [*WRITE, "parameter", "values"]),
     episode_tool("list_episodes", "List editing contexts, most recently touched first, with their bound photo, version summaries and a truncated last user message. Empty drafts are hidden unless include_empty=true. The summary has no message timestamp or pending marker: shortlist here, then call trlr_get_episode before deciding whether work is outstanding.", {"include_empty": {"type": "boolean", "default": False}}, []),
-    episode_tool("get_episode", "Read revision, user requests, immutable versions, artifact references, readbacks and errors before editing. Image measurement and comparison are separate, explicit operations through trlr_image_measure and trlr_image_compare.", SID, ["episode_id"]),
+    episode_tool("get_episode", "Read revision, user requests, immutable versions, artifact references, readbacks and errors before editing. Image measurement and comparison are separate, explicit operations through trlr_image_measure and trlr_image_compare.", {**SID, **SNAPSHOTS}, ["episode_id"]),
     episode_tool("edit_episode", "Apply a develop patch to the current context, render it in Lightroom and record a new version. settings accepts any crs: develop field, not just a fixed list: numbers, booleans, numeric arrays (curves/mixers) and nested tables (masks/retouch). Known fields are range-checked; everything else is passed through and Lightroom decides the range. Read the returned version's readback_mismatches to see which keys Lightroom clamped or ignored -- that is the real boundary, reported instead of hidden.",
-                 {**WRITE, "settings": {"type": "object"}, "note": {"type": "string"}}, [*WRITE, "settings"]),
+                 {**WRITE, "settings": {"type": "object"}, "note": {"type": "string"}, **SNAPSHOTS}, [*WRITE, "settings"]),
     episode_tool("stop_episode", "Request stopping after the current Lightroom render finishes. Completed immutable versions are retained without selecting a preferred result.", SID, list(SID)),
     episode_tool("restore_episode", "Select a saved immutable version in LR and make it current. Does not change the original master.",
-                 {**WRITE, "version": {"type": "integer", "minimum": 0}}, [*WRITE, "version"]),
+                 {**WRITE, "version": {"type": "integer", "minimum": 0}, **SNAPSHOTS}, [*WRITE, "version"]),
     episode_tool("message_episode", "Persist user editing instructions or an assistant explanation. Saving text does not execute edits; use explicit execution tools and report only observed results.",
                  {**WRITE, "text": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant"]}}, [*WRITE, "text"]),
     episode_tool("verify_episode_xmp", "Serialize a version patch to XMP, parse its parameters, apply via LR SDK to a fresh inherited-baseline copy and compare real renders. Does NOT verify Lightroom's native preset-file importer or other photographs.",
-                 {**WRITE, "version": {"type": "integer", "minimum": 0}}, [*WRITE, "version"]),
+                 {**WRITE, "version": {"type": "integer", "minimum": 0}, **SNAPSHOTS}, [*WRITE, "version"]),
     episode_tool("episode_artifact", "Read a published version image, reference, verified XMP or verification report. names: reference.jpg, v0.jpg, v1.xmp, verification1.json. Optional normalized crop [x,y,width,height] for image inspection only; does not edit LR geometry.",
                  {**SID, "name": {"type": "string"}, "max_edge": {"type": "integer", "minimum": 64, "maximum": 2048}, "crop": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}}, [*SID, "name"]),
 ])
@@ -551,7 +653,7 @@ TOOLS.extend([
         "name": "trlr_folder_roots",
         "description": "List Runtime-host folder access roots as opaque keys with a "
                        "display label, plus which extensions are served directly and which need Lightroom. "
-                       "Without a folder-library config these cover every filesystem path allowed by the Runtime OS account; an explicit config narrows the roots. "
+                       "config.json folders.mode=full covers filesystem paths allowed by the Runtime OS account; restricted narrows access to folders.roots. "
                        "No machine paths are returned. Read-only; does not call Lightroom.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -658,14 +760,16 @@ IMAGE_MEASURE_SOURCE_SCHEMA = {
 TOOLS.extend([
     {
         "name": "trlr_export_image",
-        "description": "Legacy compatibility export. Server-side render and downscale a catalog photo "
+        "description": "JPEG export through Lightroom's render pipeline. Server-side render of a catalog photo "
                        "(photo_uuid) or a session (session_id; with round = reuse that round's "
                        "stored verified preview, without = live-render the working copy). "
-                       "Oversized-source export failures automatically retry at smaller edges "
-                       "and the response records the actual edge. Returns JSON metadata only "
-                       "(artifact_ref + sha256 + export_path); export_path is on the MCP Server "
-                       "host and the image never enters context. JPEG only; the server does "
-                       "not wrap a Lightroom JPEG in PNG because that cannot restore lost detail.",
+                       "Defaults to FULL resolution (no downscale); pass max_edge only when the "
+                       "user asks for a sized copy. Oversized-source export failures automatically "
+                       "retry at smaller edges and the response records the actual edge. Returns "
+                       "JSON metadata only (artifact_ref + sha256 + export_path); export_path is on "
+                       "the MCP Server host and the image never enters context. JPEG only; the "
+                       "server does not wrap a Lightroom JPEG in PNG because that cannot restore "
+                       "lost detail.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -674,7 +778,9 @@ TOOLS.extend([
                 "session_id": {"type": "string", "minLength": 1},
                 "round": {"type": "integer", "minimum": 1,
                           "description": "Reuse the stored preview of this round (no LR call)."},
-                "max_edge": {"type": "integer", "minimum": 64, "maximum": 4096, "default": 2048},
+                "max_edge": {"type": ["integer", "null"], "minimum": 64, "maximum": 16384,
+                             "description": "Optional downscale cap in pixels. Omit (or null) for "
+                                           "full resolution; pass a value only for a sized copy."},
                 "format": {"type": "string", "enum": list(EXPORT_FORMATS), "default": "jpeg"},
                 "quality": {"type": "integer", "minimum": 1, "maximum": 100, "default": 90,
                             "description": "JPEG only."},
@@ -747,7 +853,9 @@ TOOLS.extend([
                        "Lightroom reports (curves, HSL, grain, calibration, ...) as structured "
                        "JSON, plus a standard XMP preset text assembled server-side. Nested "
                        "tables (masks) cannot be XMP attributes and are listed under "
-                       "skipped_structured_keys instead of being dropped silently.",
+                       "skipped_structured_keys instead of being dropped silently. "
+                       "Session compatibility only: Episode snapshots use "
+                       "trlr_get_episode(include_snapshots=true).",
         "inputSchema": {
             "type": "object",
             "required": ["session_id"],
@@ -941,7 +1049,13 @@ class McpServer:
         if handler is None:
             raise StoreError(f"unknown tool {name}")
         try:
-            return handler(**(args or {}))
+            result = handler(**(args or {}))
+            if (os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES") != "0"
+                    and any(block.get("type") == "image"
+                            for block in result.get("content", []))):
+                result = add_local_image_references(
+                    result, self.wb.store.root / "image-delivery")
+            return result
         except Exception as exc:
             # 工具炸了就自动落一条 issue——不靠 AI 或用户事后手写记录。
             # 记录本身再失败（比如磁盘满）不能掩盖原始错误。
@@ -970,7 +1084,19 @@ class McpServer:
         return _json_content(self.wb.health())
 
     def _tool_trlr_get_runtime_config(self, topic: str = "overview") -> dict:
-        return _json_content(self.wb.runtime_config(topic=topic))
+        snapshot = self.wb.runtime_config(topic=topic)
+        snapshot["versions"]["mcp_server"] = __version__
+        return _json_content(snapshot)
+
+    def _tool_trlr_refresh_mcp(self, action: str = "refresh") -> dict:
+        if action not in ("inspect", "refresh"):
+            raise ValueError("action must be inspect or refresh")
+        manager = getattr(getattr(self.wb, "lrops", None), "bridge_manager", None)
+        state = inspect_generation(SERVER_INFO, RUNTIME_OPERATOR_INSTRUCTIONS,
+                                   manager.status if manager else None)
+        if action == "refresh":
+            state.update(status="reconnect_required", reason="Use the supervised python -m workbench_mcp entrypoint; this adapter cannot replace its own transport")
+        return _json_content(state)
 
     def _tool_trlr_list_catalogs(self) -> dict:
         return _json_content(self.wb.catalog_inventory())
@@ -1006,6 +1132,29 @@ class McpServer:
 
     def _tool_trlr_get_current_selection(self) -> dict:
         return _json_content(self.wb.current_selection())
+
+    def _tool_trlr_update_xmp_sidecar(self, **params) -> dict:
+        return _json_content(self.wb.update_xmp_sidecar(**params))
+
+    def _tool_trlr_apply_mask(self, **params) -> dict:
+        return _json_content(self.wb.apply_mask(**params))
+
+    def _tool_trlr_native_mask(self, **params) -> dict:
+        return _json_content(self.wb.native_mask(**params))
+
+    def _tool_trlr_get_photo_marks(self, photo_uuids) -> dict:
+        return {"content": [_text(json.dumps(self.wb.photo_marks.get(photo_uuids),
+                                             ensure_ascii=False, separators=(",", ":")))]}
+
+    def _tool_trlr_set_photo_marks(self, items, request_id,
+                                  protection_mode="skip_marked_photos") -> dict:
+        return _json_content(self.wb.photo_marks.set(items, request_id, protection_mode))
+
+    def _tool_trlr_get_mark_operation(self, operation_id, details=False) -> dict:
+        return _json_content(self.wb.photo_marks.operation(operation_id, details=details))
+
+    def _tool_trlr_undo_photo_marks(self, operation_id, request_id) -> dict:
+        return _json_content(self.wb.photo_marks.undo(operation_id, request_id))
 
     def _tool_trlr_get_current_folder_previews(self, limit: int = 10, offset: int = 0,
                                                 size: int = 512, max_edge: int = 512) -> dict:
@@ -1049,14 +1198,15 @@ class McpServer:
             "items": public_items,
         }
         blocks = [_text(json.dumps(response, ensure_ascii=False))]
-        # Place a concise name/metadata block immediately before each native
-        # image. Codex owns visual layout, but this preserves an unambiguous
-        # text-to-image pairing in every MCP client.
+        # Full metadata is already in the page. Label each image by index/name
+        # without duplicating UUIDs, provenance and preview records.
         for public, record in display_items:
-            blocks.append(_text(json.dumps({
-                "index": public["index"], "photo": public["photo"],
-                "preview": public["preview"],
-            }, ensure_ascii=False)))
+            label = {"index": public["index"], "file_name": public["photo"]["file_name"]}
+            if public["photo"].get("copy_name"):
+                label["copy_name"] = public["photo"]["copy_name"]
+            if record is None:
+                label["state"] = "unavailable"
+            blocks.append(_text(json.dumps(label, ensure_ascii=False)))
             if record is not None:
                 blocks.extend(_image_content(Path(record["preview_path"]), max_edge)["content"])
         return {"content": blocks}
@@ -1248,6 +1398,9 @@ class McpServer:
             # Preserve Studio's established 1024px default while making it a
             # real cap when the user chose a smaller presentation budget.
             args["long_edge"] = min(1024, configured_edge)
+        # MCP contract: snapshots are opt-in (schema default false), unlike
+        # the Studio internal default that keeps full state for local callers.
+        args.setdefault("include_snapshots", False)
         return _json_content(self.wb.studio.create(**args))
 
     def _tool_trlr_render_parameter_variants(self, episode_id, **args):
@@ -1265,28 +1418,31 @@ class McpServer:
             rows = [row for row in rows if row.get('source_uuid')]
         return _json_content(rows)
 
-    def _tool_trlr_get_episode(self, episode_id):
-        return _json_content(self.wb.studio.get(episode_id))
+    def _tool_trlr_get_episode(self, episode_id, include_snapshots=False):
+        return _json_content(self.wb.studio.get(episode_id, include_snapshots=include_snapshots))
 
     def _tool_trlr_edit_episode(self, episode_id, **args):
+        args.setdefault("include_snapshots", False)
         return _json_content(self.wb.studio.action(episode_id, 'edit', **args))
 
     def _tool_trlr_stop_episode(self, episode_id):
         return _json_content(self.wb.studio.stop(episode_id))
 
     def _tool_trlr_restore_episode(self, episode_id, **args):
+        args.setdefault("include_snapshots", False)
         return _json_content(self.wb.studio.action(episode_id, 'restore', **args))
 
     def _tool_trlr_message_episode(self, episode_id, **args):
         return _json_content(self.wb.studio.action(episode_id, 'message', **args))
 
     def _tool_trlr_verify_episode_xmp(self, episode_id, **args):
+        args.setdefault("include_snapshots", False)
         return _json_content(self.wb.studio.action(episode_id, 'verify', **args))
 
     def _tool_trlr_episode_artifact(self, episode_id, name, max_edge=1024, crop=None):
         path = self.wb.studio.artifact(episode_id, name)
         if path.suffix in ('.xmp', '.json'):
-            return {"content": [_text(path.read_text())]}
+            return {"content": [_text(path.read_text(encoding='utf-8'))]}
         max_edge = self._codex_preview_edge(max_edge)
         if name == 'reference.jpg':
             artifact = build_artifact_ref(
@@ -1407,7 +1563,7 @@ class McpServer:
                             "result": {**self.call_tool(params.get("name", ""),
                                                         arguments),
                                        "isError": False}}
-                except (StoreError, LrOpsError, FolderError, KeyError, ValueError,
+                except (StoreError, LrOpsError, FolderError, TargetError, KeyError, ValueError,
                         TypeError, OSError) as exc:
                     return {"jsonrpc": "2.0", "id": msg_id,
                             "result": {"content": [_text(f"error: {exc}")],
@@ -1441,7 +1597,21 @@ class McpServer:
 
 
 def main() -> None:
-    McpServer(build_workbench()).serve(sys.stdin, sys.stdout)
+    # The stdio transport is UTF-8 by contract. A Windows host that spawns the
+    # server without PYTHONUTF8 / PYTHONIOENCODING decodes piped stdio with the
+    # ANSI code page and surrogateescape: non-ASCII arguments (a Chinese
+    # episode intent, say) arrive as lone-surrogate mojibake that later crashes
+    # JSON persistence with "surrogates not allowed", and non-ASCII replies go
+    # out as GBK bytes that clients read as mojibake. Pin both directions
+    # regardless of the host environment.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
+    workbench = build_workbench(manage_bridge=True)
+    # Tool discovery must not wait for Bridge ownership or Lightroom. Actual
+    # HTTP calls still perform the normal preflight before submitting work.
+    workbench.lrops.bridge_manager.start_background(
+        workbench.lrops.base, workbench.lrops.target.token)
+    McpServer(workbench).serve(sys.stdin, sys.stdout)
 
 
 if __name__ == "__main__":

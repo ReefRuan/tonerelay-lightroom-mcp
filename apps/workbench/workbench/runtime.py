@@ -7,6 +7,7 @@ protocol or manufactures transport URLs.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 import tempfile
@@ -27,6 +28,9 @@ from .catalog_discovery import catalog_identity_for_path, discover_catalogs
 from .catalog_switch import (CatalogSwitchError, is_supported_host,
                              open_catalog_file)
 from .configuration_help import configuration_help, validate_config_topic
+from .photo_marks import PhotoMarks, MarkConnection
+from lr_ops.sidecar import validate_request as validate_sidecar_request
+from lr_ops.native_mask import validate_request as validate_native_mask_request
 
 # One list, not two: the folder library owns the extension set, and Runtime's
 # upload capability consumes it rather than keeping a copy that can drift.
@@ -139,6 +143,7 @@ class Workbench:
         self._image_tools = None
         self._preset_tools = None
         self._catalog_tools = None
+        self._photo_marks = None
         self._previews = PreviewStore(self.store.root)
         self.presentation = PresentationSettings(self.store.root)
         self.issues = IssueStore(self.store.root / "issues.jsonl")
@@ -185,6 +190,18 @@ class Workbench:
         return self.studio.run(
             command, params, catalog_identity=probe["catalog_identity"])
 
+    @property
+    def photo_marks(self):
+        if self._photo_marks is None:
+            self._photo_marks = PhotoMarks(self.store.root, self._mark_connection)
+        return self._photo_marks
+
+    def _mark_connection(self):
+        from .studio.engine import Studio
+        client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
+        probe = Studio(self.store.root, client).probe()
+        return MarkConnection(client, probe)
+
     def catalog_client(self) -> CatalogBoundClient:
         """A lazy, target-pinned client for one compound Catalog operation."""
         client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
@@ -205,7 +222,12 @@ class Workbench:
             "base": self.lrops.base,
             "time": time.time(),
             "catalog_policy": None,
+            "versions": {"lightroom": None, "lightroom_plugin": None,
+                         "lightroom_plugin_build": None},
         }
+        manager = getattr(self.lrops, "bridge_manager", None)
+        if manager is not None:
+            result["bridge"] = dict(manager.status)
         if not reachable:
             return result
 
@@ -223,6 +245,15 @@ class Workbench:
                 "error": str(exc)[:500],
             }
             return result
+
+        # Version labels are display facts, never paths or authorization data.
+        # Reject malformed probe values rather than echoing arbitrary host text.
+        for key, field in (("lightroom", "lr_version"),
+                           ("lightroom_plugin", "plugin_version"),
+                           ("lightroom_plugin_build", "build_id")):
+            value = probe.get(field)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._+()\[\]-]{0,127}", value):
+                result["versions"][key] = value
 
         expected_mode = getattr(client, "access_mode", "full")
         expected_identity = getattr(client, "catalog_identity", None)
@@ -358,6 +389,22 @@ class Workbench:
             passthrough = {}
         snapshot = {
             "schema_version": "runtime-config-v1",
+            "versions": health.get("versions") or {
+                "lightroom": None, "lightroom_plugin": None,
+                "lightroom_plugin_build": None},
+            "configuration": {
+                "file": "config.json",
+                "persisted": self.presentation.config.path.is_file(),
+                "revision": self.presentation.config.read()["revision"],
+                "reload": {
+                    "targets": "next request; Catalog changes still require explicit confirmation",
+                    "presentation": "next image response or new editing context",
+                    "folders": "next folder request",
+                    "paths": "restart MCP and Bridge; no data migration",
+                    "bridge": "restart Bridge and affected clients",
+                    "execution": "restart MCP",
+                },
+            },
             "target": {
                 "kind": "local" if local_target else "remote",
                 "label": "本机 Lightroom" if local_target else "远端 Lightroom",
@@ -378,6 +425,9 @@ class Workbench:
                     "lightroom_unavailable" if not health.get("lrops") else None),
                 "access_mode": {
                     "expected": expected_mode,
+                    "expected_source": ("config.json/targets" if registry and registry.persisted()
+                                        else "environment_or_default" if registry else "injected_client"),
+                    "expected_persisted": registry.persisted() if registry else False,
                     "actual": policy.get("access_mode"),
                     "managed_by": "Lightroom Plugin Manager",
                     "editable_in_runtime": False,
@@ -392,7 +442,7 @@ class Workbench:
                 "edit_render_max_edge": (
                     presentation["edit_render_max_edge"] if presentation else None),
                 "status": presentation_status,
-                "source": "Runtime data root",
+                "source": "config.json/presentation",
                 "editable_in_conversation": presentation is not None,
                 "config_status": presentation_status,
                 "codex_preview_scope": "subsequent MCP image responses",
@@ -410,18 +460,18 @@ class Workbench:
                 "editable_in_conversation": False,
                 "policy": ("All filesystem paths allowed by the Runtime OS account; supported image types only."
                            if folder["access_mode"] == "full" else
-                           "Restricted to roots in folder-library configuration."),
+                           "Restricted to config.json folders.roots."),
                 "path_exposure": "root keys and labels only",
             },
             "admin_managed": [
                 {"setting": "Lightroom safe/full mode and Sandbox", "managed_by":
                  "Lightroom Plugin Manager", "editable_in_runtime": False},
                 {"setting": "Bridge endpoint, Runtime data root and execution flags",
-                 "managed_by": "Runtime installation/environment", "editable_in_runtime": False},
+                 "managed_by": "config.json", "editable_in_runtime": False},
                 {"setting": "Unknown and structured Develop parameter passthrough",
                  "enabled": passthrough.get("enabled"),
                  "structured_enabled": passthrough.get("structured_enabled"),
-                 "managed_by": "Runtime environment", "editable_in_runtime": False},
+                 "managed_by": "config.json/execution", "editable_in_runtime": False},
                 {"setting": "Bridge credential", "configured":
                  bool(target_token), "value_returned": False,
                  "editable_in_runtime": False},
@@ -580,6 +630,7 @@ class Workbench:
         """Bind and persist the user's explicitly confirmed active Catalog."""
         if confirm_current_catalog is not True:
             raise StoreError("需要用户明确确认当前打开的 Lightroom Catalog。")
+        expected_target = getattr(self.lrops, "target", None)
         status = self.health()
         policy = status.get("catalog_policy") or {}
         actual_identity = policy.get("catalog_identity")
@@ -601,6 +652,7 @@ class Workbench:
             access_mode=actual_mode,
             catalog_identity=actual_identity,
             catalog_id=policy.get("catalog_id"),
+            expected_target=expected_target,
         )
         return {
             "saved": True,
@@ -662,6 +714,27 @@ class Workbench:
             "total": page["total"],
         }
 
+    def update_xmp_sidecar(self, **params) -> dict:
+        """Explicit master-sidecar operation, separate from Episode edits."""
+        validate_sidecar_request("update_xmp_sidecar", params)
+        result = self.run("update_xmp_sidecar", params)
+        if "_sidecar_context" in result:
+            raise StoreError("Upgrade lr-ops before using sidecar operations")
+        return result
+
+    def apply_mask(self, **params) -> dict:
+        """Inspect, write or verify native mask records; never automate the UI."""
+        validate_sidecar_request("apply_mask", params)
+        result = self.run("apply_mask", params)
+        if "_sidecar_context" in result:
+            raise StoreError("Upgrade lr-ops before using sidecar operations")
+        return result
+
+    def native_mask(self, **params) -> dict:
+        """Native SDK AI mask generation and local edits on virtual copies."""
+        validate_native_mask_request(params)
+        return self.run("native_mask", params)
+
     def preview_photo(self, photo_uuid: str, size: int = 1024,
                       force: bool = False) -> dict:
         """Return a fast thumbnail for an already catalogued photo.
@@ -713,9 +786,16 @@ class Workbench:
         ref = data.get("output_ref")
         if not ref:
             raise LrOpsError("快速预览未返回文件句柄；请检查 lr-ops 与插件版本")
-        with tempfile.NamedTemporaryFile(prefix="photo-preview-", suffix=".jpg", delete=True) as handle:
-            client.fetch_output(ref, Path(handle.name))
-            content = Path(handle.name).read_bytes()
+        # fetch_output reopens the destination path to write the bytes, so the
+        # handle must be closed first: Windows denies that second write while a
+        # NamedTemporaryFile(delete=True) still holds the file open.
+        with tempfile.NamedTemporaryFile(prefix="photo-preview-", suffix=".jpg", delete=False) as handle:
+            temp_path = Path(handle.name)
+        try:
+            client.fetch_output(ref, temp_path)
+            content = temp_path.read_bytes()
+        finally:
+            temp_path.unlink(missing_ok=True)
         if not content:
             raise LrOpsError("快速预览返回空文件")
         manifest = self._previews.publish(
@@ -894,9 +974,12 @@ class Workbench:
         return {"stage_id": stage_id, "name": safe_name, "photo": imported.get("photo")}
 
 def build_workbench(seed_base: str | None = None, *,
-                    store: Store | None = None) -> Workbench:
+                    store: Store | None = None, manage_bridge: bool = False) -> Workbench:
     """Create the one protocol-neutral Runtime composition used by MCP."""
     runtime_store = store if store is not None else Store()
     registry = TargetRegistry(
-        runtime_store.root / "targets.json", seed_base=seed_base)
-    return Workbench(runtime_store, LrOpsRouter(registry))
+        runtime_store.root / "config.json", seed_base=seed_base)
+    if not manage_bridge:
+        return Workbench(runtime_store, LrOpsRouter(registry))
+    from .bundled_bridge import make_router
+    return Workbench(runtime_store, make_router(registry, runtime_store.root.parent))

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "revision": 0,
+  "paths": {
+    "data": "data",
+    "cache": "cache",
+    "tmp": "tmp",
+    "logs": "logs",
+    "backups": "backups",
+    "downloads": "downloads",
+    "run": "run"
+  },
+  "targets": {
+    "active": "local",
+    "targets": [
+      {
+        "id": "local",
+        "label": "Local Lightroom",
+        "base": "http://127.0.0.1:17777",
+        "token": null,
+        "catalog_id": null,
+        "access_mode": "full",
+        "catalog_identity": null,
+        "is_default": true
+      }
+    ]
+  },
+  "presentation": {
+    "codex_preview_max_edge": 1024,
+    "edit_render_max_edge": 2048
+  },
+  "folders": {
+    "mode": "restricted",
+    "roots": [
+      "/path/to/Pictures"
+    ],
+    "extensions": null,
+    "recursive": false
+  },
+  "execution": {
+    "allow_passthrough": true,
+    "allow_structured": true
+  },
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 17777,
+    "token": null
+  }
+}

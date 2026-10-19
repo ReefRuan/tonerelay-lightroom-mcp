@@ -21,10 +21,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
 from workbench.runtime import Workbench
+from lr_ops.configuration import defaults
 from workbench.folders import DEFAULT_EXTENSIONS
 from workbench.store import Store
 from workbench_mcp.server import TOOLS, McpServer
@@ -108,11 +110,10 @@ class FolderToolTestCase(unittest.TestCase):
         self.photos = Path(self.tmp.name) / "photos"
         self.photos.mkdir(parents=True)
         self.data.mkdir(parents=True)
-        (self.data / "folder-library.json").write_text(json.dumps({
-            "roots": [str(self.photos)],
-            "extensions": list(DEFAULT_EXTENSIONS),
-            "recursive": False,
-        }), encoding="utf-8")
+        config = defaults()
+        config["folders"] = {"mode": "restricted", "roots": [str(self.photos)],
+                             "extensions": list(DEFAULT_EXTENSIONS), "recursive": False}
+        (self.data / "config.json").write_text(json.dumps(config), encoding="utf-8")
         self.bridge = FolderBridge()
         self.server = McpServer(Workbench(Store(self.data), self.bridge))
 
@@ -214,7 +215,7 @@ class FolderToolProtocolTest(FolderToolTestCase):
         self.assertNotIn("preview_url", metadata["artifact"])
         self.assertNotIn("resolved", metadata)
         self.assertNotIn(str(self.photos), result["content"][0]["text"])
-        image = result["content"][1]
+        image = next(block for block in result["content"] if block["type"] == "image")
         self.assertEqual(image["type"], "image")
         self.assertEqual(image["mimeType"], "image/jpeg")
         self.assertTrue(image["data"])
@@ -283,8 +284,15 @@ class FolderToolProtocolTest(FolderToolTestCase):
     def test_the_key_namespace_is_pinned_to_the_live_cache(self):
         """The same hash the blobs on disk are named under."""
         from workbench.folders import file_key_for
-        self.assertEqual(file_key_for("/var/tmp/tonerelay-fixtures/IMG_0004.CR2"),
-                         "7d5a4125b75d460c18f9")
+        # The cached macOS /var path resolves to /private/var; Windows keeps
+        # its drive and backslashes. Pin each resolved spelling on every host.
+        for resolved, key in (
+                ("/private/var/tmp/tonerelay-fixtures/IMG_0004.CR2", "7d5a4125b75d460c18f9"),
+                ("/var/tmp/tonerelay-fixtures/IMG_0004.CR2", "495216a882d2b29261c5"),
+                (r"C:\var\tmp\tonerelay-fixtures\IMG_0004.CR2", "b6ac31594a6e21adcad5")):
+            with self.subTest(resolved=resolved), mock.patch("workbench.folders.Path") as path:
+                path.return_value.resolve.return_value = resolved
+                self.assertEqual(file_key_for("fixture"), key)
 
     def test_folder_errors_are_tool_errors_not_protocol_errors(self):
         """A FolderError escaping to -32603 would break every client."""
@@ -317,7 +325,7 @@ class StdioProtocolTest(unittest.TestCase):
         process = subprocess.Popen(
             [sys.executable, "-m", "workbench_mcp"], cwd=str(MCP_DIR), env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True)
+            text=True, encoding="utf-8")
         self.addCleanup(process.kill)
         requests = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -342,7 +350,8 @@ class StdioProtocolTest(unittest.TestCase):
         process.stderr.close()
         self.assertEqual(len(replies), 2, f"stderr: {stderr[:400]}")
         self.assertEqual(replies[0]["id"], 1)
-        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], "0.6.0")
+        from workbench_mcp import __version__
+        self.assertEqual(replies[0]["result"]["serverInfo"]["version"], __version__)
         names = [tool["name"] for tool in replies[1]["result"]["tools"]]
         self.assertEqual(len(names), len(set(names)))
         self.assertIn("trlr_parameter_reference", names)

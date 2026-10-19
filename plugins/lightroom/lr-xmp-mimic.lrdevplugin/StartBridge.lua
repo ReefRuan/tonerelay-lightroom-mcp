@@ -1,4 +1,4 @@
--- Menu entry: start the local bridge if it is not running yet.
+-- Menu entry: start Lightroom's outbound poller; does not start lr-ops.
 local LrDialogs = import 'LrDialogs'
 
 local Bridge = require 'Bridge'

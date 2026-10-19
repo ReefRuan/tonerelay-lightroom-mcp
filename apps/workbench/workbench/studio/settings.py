@@ -16,6 +16,7 @@ and then checked by reading back whether the key survived, but the engine does
 not claim to understand its shape.
 """
 import math
+from lr_ops.configuration import active_store
 import os
 import re
 import uuid
@@ -51,7 +52,15 @@ NAME_RE = re.compile(r'\A[A-Za-z][A-Za-z0-9]{0,60}\Z')
 _STRUCTURED_MAX_DEPTH = 6
 _STRUCTURED_MAX_ITEMS = 256
 
+_CONFIG = active_store()
+_EXECUTION = _CONFIG.read()["execution"] if _CONFIG else None
+
+
 def _flag(name, default=True):
+    if _EXECUTION is not None:
+        key = {"LR_XMP_MIMIC_ALLOW_PASSTHROUGH": "allow_passthrough",
+               "LR_XMP_MIMIC_ALLOW_STRUCTURED": "allow_structured"}[name]
+        return _EXECUTION[key]
     raw = os.environ.get(name)
     if raw is None:
         return default

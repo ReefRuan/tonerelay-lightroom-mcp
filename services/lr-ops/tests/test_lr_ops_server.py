@@ -371,6 +371,10 @@ class TestAuth(ServerTestBase):
 
         status, _ = self.call("GET", "/health")
         self.assertEqual(status, 200)
+        status, _ = self.call("GET", "/bridge/identity")
+        self.assertEqual(status, 403)
+        status, _ = self.call("GET", "/bridge/identity", headers=self.AUTH)
+        self.assertEqual(status, 200)
 
         status, body = self.call("POST", "/jobs", {"command": "probe_client", "params": {}}, headers=self.AUTH)
         job_id = body["job_id"]

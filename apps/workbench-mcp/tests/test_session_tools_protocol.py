@@ -232,6 +232,46 @@ class SessionToolTests(unittest.TestCase):
         self.assertTrue(Path(result["export_path"]).exists())
         self.assertEqual(result["artifact_ref"]["sha256"], result["sha256"])
 
+    def test_live_export_download_destination_is_unlocked_and_removed(self):
+        destinations = []
+        fetch = self.fake.fetch_output
+
+        def check_destination(ref, destination):
+            destinations.append(Path(destination))
+            self.assertFalse(destination.exists())
+            return fetch(ref, destination)
+
+        with patch.object(self.fake, "fetch_output", side_effect=check_destination):
+            self.call("trlr_export_image", photo_uuid="u-catalog", max_edge=1024)
+        self.assertEqual(len(destinations), 1)
+        self.assertFalse(destinations[0].parent.exists())
+
+    def test_live_export_partial_downloads_are_removed_on_failure(self):
+        destinations = []
+
+        def fail_download(ref, destination):
+            destinations.append(Path(destination))
+            destination.write_bytes(b"partial transfer")
+            raise LrOpsError("injected transfer failure")
+
+        with patch.object(self.fake, "fetch_output", side_effect=fail_download):
+            self.assertIn("injected transfer failure", self.call_error(
+                "trlr_export_image", photo_uuid="u-catalog", max_edge=1024))
+        self.assertEqual(len(destinations), 2)
+        self.assertTrue(all(not path.parent.exists() for path in destinations))
+
+    def test_export_defaults_to_full_resolution(self):
+        """不传 max_edge 默认全尺寸：向桥请求 long_edge=0，服务端不再缩放。"""
+        self.fake.export_size = (2048, 1536)
+        result = self.call("trlr_export_image", photo_uuid="u-catalog")
+        self.assertIsNone(result["requested_max_edge"])
+        self.assertEqual(result["basis"], "live_export")
+        self.assertEqual(self.fake.export_calls[-1], 0)
+        self.assertEqual(result["dimensions"], [2048, 1536])
+        self.assertEqual(result["actual_edge"], 2048)
+        with Image.open(result["export_path"]) as image:
+            self.assertEqual(image.size, (2048, 1536))
+
     def test_export_round_reuses_stored_preview(self):
         self.call("trlr_apply_settings", session_id=self.session["session_id"],
                   settings={"Exposure2012": 0.5})
@@ -592,11 +632,15 @@ class SessionToolTests(unittest.TestCase):
         actual_root = Path(self.tmp.name) / "actual-store"
         linked_root = Path(self.tmp.name) / "linked-store"
         actual_root.mkdir()
+        # Populate the persisted fixture via its physical root. This is a read
+        # contract test, independent of OS policy for creating directories
+        # through a symlink in the system temporary directory.
+        physical_wb = Workbench(Store(actual_root), FakeLrOps())
+        session = physical_wb.create_session("src", "ref", "color_match")
         linked_root.symlink_to(actual_root, target_is_directory=True)
         store = Store(linked_root)
         wb = Workbench(store, FakeLrOps())
         server = McpServer(wb)
-        session = wb.create_session("src", "ref", "color_match")
         response = server.handle({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "trlr_get_preview", "arguments": {

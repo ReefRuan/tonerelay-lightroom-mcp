@@ -11,10 +11,10 @@ Three pieces, deliberately separate:
     An immutable description: id, label, bridge base URL, optional token.
 
 ``TargetRegistry``
-    The persisted list, plus which one is active. Lives in a JSON file so the
-    set survives restarts, seeded from an explicit factory argument or
-    ``LROPS_BASE`` so an existing single-target setup keeps working untouched.
-    The current MCP surface does not expose target mutation.
+    The persisted list, plus which one is active, in ``config.json/targets``.
+    Managed installations read this section; isolated embedded callers can
+    seed an absent configuration from a factory argument or ``LROPS_BASE``.
+    The current MCP surface does not expose general target mutation.
 
 ``LrOpsRouter``
     Duck-types :class:`LrOpsClient` (``run``/``reachable``/``upload``/
@@ -35,14 +35,15 @@ Binding an episode to a target is a separate concern -- see
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
+import threading
+from functools import wraps
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
+from lr_ops.configuration import ConfigError, defaults, for_workbench
 
 DEFAULT_TARGET_ID = "local"
 DEFAULT_LABEL = "本机 Lightroom"
@@ -56,8 +57,8 @@ class TargetError(RuntimeError):
 def normalize_access_mode(value) -> str:
     """Validate the target's bridge access contract.
 
-    Missing values mean ``full`` so registries written before access modes were
-    introduced retain their historical behaviour.
+    An omitted value in an API or embedded seed means ``full``. Persisted
+    config.json values are validated before reaching this helper.
     """
     if value is None:
         return "full"
@@ -145,6 +146,38 @@ def _seed_from_environment(base: str | None = None) -> Target:
                   access_mode=access_mode, is_default=True)
 
 
+def _registry_lock(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._thread_lock:
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
+def _config_write(method):
+    @wraps(method)
+    @_registry_lock
+    def wrapped(self, *args, **kwargs):
+        result = []
+        def change(payload):
+            if not self.path.exists():
+                payload = {"active": self._seed.id, "targets": [self._seed.to_json()]}
+            self._load_payload(payload)
+            self._writing = True
+            try:
+                result.append(method(self, *args, **kwargs))
+                return {"active": self._active_id,
+                        "targets": [target.to_json() for target in self._targets.values()]}
+            finally:
+                self._writing = False
+        try:
+            self.config.update("targets", change)
+        except ConfigError as exc:
+            raise TargetError(str(exc)) from exc
+        return result[0]
+    return wrapped
+
+
 class TargetRegistry:
     """Persisted set of LR targets plus the active selection.
 
@@ -154,9 +187,14 @@ class TargetRegistry:
     actually adds or selects a target.
     """
 
-    def __init__(self, path: Path, seed_base: str | None = None):
-        self.path = Path(path)
+    def __init__(self, path: Path, seed_base: str | None = None, *, config=None):
+        self.config = config or for_workbench(Path(path).parent)
+        self.path = self.config.path
         self._seed_base = seed_base
+        self._thread_lock = threading.RLock()
+        self._seed = (Target.from_json(defaults()["targets"]["targets"][0])
+                      if self.path.exists() else _seed_from_environment(seed_base))
+        self._writing = False
         self._targets: dict[str, Target] = {}
         self._active_id: str = DEFAULT_TARGET_ID
         self._loaded_from_disk = False
@@ -165,59 +203,50 @@ class TargetRegistry:
     # ---- persistence -------------------------------------------------------
 
     def _load(self) -> None:
-        if self.path.is_file():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                data = None
-            if isinstance(data, dict):
-                targets = []
-                for row in data.get("targets") or []:
-                    try:
-                        targets.append(Target.from_json(row))
-                    except TargetError:
-                        continue  # one hand-edited bad row must not invalidate the registry
-                if targets:
-                    self._targets = {t.id: t for t in targets}
-                    self._active_id = data.get("active") or targets[0].id
-                    self._loaded_from_disk = True
-        if not self._targets:
-            seed = _seed_from_environment(self._seed_base)
-            self._targets = {seed.id: seed}
-            self._active_id = seed.id
+        if self._writing:
+            return
+        try:
+            data = self.config.read()["targets"]
+        except ConfigError as exc:
+            raise TargetError(str(exc)) from exc
+        self._loaded_from_disk = self.path.exists()
+        if not self._loaded_from_disk:
+            data = {"active": self._seed.id, "targets": [self._seed.to_json()]}
+        self._load_payload(data)
+
+    def _load_payload(self, data):
+        targets = [Target.from_json(row) for row in data["targets"]]
+        self._targets = {target.id: target for target in targets}
+        self._active_id = data["active"]
 
     def _persist(self) -> None:
-        payload = {"active": self._active_id,
-                   "targets": [t.to_json() for t in self._targets.values()]}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Write-then-rename: a half-written registry would lose the user's
-        # target list, and this file is hand-editable so it will be edited.
-        handle = tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=str(self.path.parent),
-            prefix=self.path.name, suffix=".tmp", delete=False,
-        )
-        try:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        finally:
-            handle.close()
-        os.replace(handle.name, self.path)
+        # The enclosing config transaction saves the complete section under
+        # one process lock, retaining concurrent changes to other sections.
+        if not self._writing:
+            raise TargetError("target writes require a config transaction")
 
     # ---- reads -------------------------------------------------------------
 
     @property
+    @_registry_lock
     def active_id(self) -> str:
+        self._load()
         return self._active_id
 
     @property
+    @_registry_lock
     def active(self) -> Target:
+        self._load()
         return self._targets[self._active_id]
 
+    @_registry_lock
     def list(self) -> list[Target]:
+        self._load()
         return sorted(self._targets.values(), key=lambda t: (not t.is_default, t.label))
 
+    @_registry_lock
     def get(self, target_id: str) -> Target:
+        self._load()
         target = self._targets.get(target_id)
         if target is None:
             raise TargetError(f"未知的 LR 目标：{target_id}")
@@ -228,6 +257,7 @@ class TargetRegistry:
 
     # ---- writes ------------------------------------------------------------
 
+    @_config_write
     def add(self, label: str, base: str, token: str | None = None,
             target_id: str | None = None, catalog_id: str | None = None,
             access_mode: str = "full", catalog_identity: str | None = None) -> Target:
@@ -246,6 +276,7 @@ class TargetRegistry:
         self._persist()
         return target
 
+    @_config_write
     def update(self, target_id: str, *, label: str | None = None,
                base: str | None = None, token: str | None = None,
                catalog_id: str | None = None, access_mode: str | None = None,
@@ -272,6 +303,7 @@ class TargetRegistry:
             self._persist()
         return self._targets[target_id]
 
+    @_config_write
     def remove(self, target_id: str) -> None:
         target = self.get(target_id)
         if target.is_default or len(self._targets) == 1:
@@ -281,6 +313,7 @@ class TargetRegistry:
             self._active_id = next(iter(self._targets))
         self._persist()
 
+    @_config_write
     def select(self, target_id: str) -> Target:
         target = self.get(target_id)
         if target_id != self._active_id:
@@ -288,10 +321,14 @@ class TargetRegistry:
             self._persist()
         return target
 
+    @_config_write
     def bind_active_catalog(self, *, access_mode: str,
-                            catalog_identity: str, catalog_id: str | None) -> Target:
+                            catalog_identity: str, catalog_id: str | None,
+                            expected_target: Target | None = None) -> Target:
         """Persist one explicitly confirmed live Catalog on the active target."""
         current = self.active
+        if expected_target is not None and current != expected_target:
+            raise TargetError("Target changed while confirming Catalog; read it again")
         updated = replace(
             current,
             access_mode=access_mode,
@@ -337,7 +374,8 @@ class LrOpsRouter:
 
     def _client_for(self, target: Target):
         client = self._clients.get(target.id)
-        if client is None or getattr(client, "base", None) != target.base:
+        if (client is None or getattr(client, "base", None) != target.base
+                or getattr(client, "token", None) != target.token):
             client = self._factory(**target.client_kwargs())
             self._clients[target.id] = client
         return client
@@ -375,18 +413,19 @@ class LrOpsRouter:
         return PinnedLrOpsClient(target, self._client_for(target))
 
     def run(self, command: str, params: dict | None = None) -> dict:
+        target = self.registry.active
         if command != "probe_client":
-            if self.target.catalog_identity is None:
+            if target.catalog_identity is None:
                 raise TargetError(
                     "Catalog 尚未确认绑定；先调用 trlr_list_catalogs，"
                     "再由用户确认当前 Lightroom Catalog。")
             params = params or {}
-            if (params.get("expected_catalog_identity") != self.target.catalog_identity
-                    or params.get("expected_access_mode") != self.target.access_mode):
+            if (params.get("expected_catalog_identity") != target.catalog_identity
+                    or params.get("expected_access_mode") != target.access_mode):
                 raise TargetError(
                     "当前 Lightroom Catalog 与已确认的 Target 配置不一致；"
                     "请切回已绑定 Catalog，或在用户明确要求后重新确认。")
-        return self._current().run(command, params)
+        return self._client_for(target).run(command, params)
 
     def reachable(self) -> bool:
         return self._current().reachable()

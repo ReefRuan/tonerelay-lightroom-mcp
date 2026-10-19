@@ -121,8 +121,10 @@ class CatalogProtocolTests(unittest.TestCase):
         self.assertIn("unrated", schema["properties"]["rating"]["description"])
         # The listing tool keeps its name; no second, synonymous photo tool.
         photo_tools = sorted(name for name in tools if "photo" in name)
-        self.assertEqual(photo_tools, ["trlr_get_photo_preview", "trlr_list_photos",
-                                       "trlr_studio_photos", "trlr_upload_photo"])
+        self.assertEqual(photo_tools, ["trlr_get_photo_marks", "trlr_get_photo_preview",
+                                       "trlr_list_photos", "trlr_set_photo_marks",
+                                       "trlr_studio_photos", "trlr_undo_photo_marks",
+                                       "trlr_upload_photo"])
 
     def test_arguments_reach_catalog_tools_and_page_fields_survive(self):
         wb = FakeWorkbench()

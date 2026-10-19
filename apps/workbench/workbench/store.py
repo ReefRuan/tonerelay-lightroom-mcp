@@ -12,13 +12,9 @@ import os
 import time
 import uuid
 from pathlib import Path
+from lr_ops.configuration import runtime_data_root
 
-DATA_ROOT = Path(
-    os.environ.get(
-        "LR_XMP_MIMIC_RUNTIME_DATA_ROOT",
-        Path.home() / "lr-xmp-mimic-runtime-data",
-    )
-) / "workbench"
+DATA_ROOT = runtime_data_root() / "workbench"
 
 MODES = ("color_match", "style_match")
 

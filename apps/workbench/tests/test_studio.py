@@ -81,7 +81,7 @@ class FakeLR:
         if command in ('get_develop_snapshot','get_develop_state'):
             return {'settings':copy.deepcopy(self.settings[photo]),'photo':self.info(photo)}
         if command == 'create_virtual_copy':
-            assert photo == 'source'
+            assert photo in self.settings
             self.copies+=1
             name=f'copy{self.copies}'
             self.settings[name]=copy.deepcopy(self.settings[photo])
@@ -132,6 +132,20 @@ class StudioTests(unittest.TestCase):
             if self.s['status']!='rendering_parameter_variants': return self.s
             time.sleep(.02)
         self.fail('parameter variants timeout')
+
+    def test_virtual_copy_source_is_allowed_and_baseline_follows_the_copy(self):
+        self.lr.settings['copy9']=copy.deepcopy(self.lr.settings['source'])
+        self.lr.settings['copy9']['Exposure2012']+=.3
+        s=self.studio.create('copy9',mode='source_edit',long_edge=256)
+        self.assertEqual(s['source_uuid'],'copy9')
+        self.assertEqual(s['baseline_snapshot'],self.lr.settings['copy9'])
+        name=[p['name'] for c,p in self.lr.calls if c=='create_virtual_copy'][-1]
+        self.assertRegex(name,r'^TRLR \d{4}-\d{2}-\d{2} [0-9a-f]{8} v0$')
+        s=self.studio.action(s['id'],'edit',s['revision'],str(uuid.uuid4()),
+                             settings={'Exposure2012':.9})
+        # The edit renders on a copy-of-virtual-copy that inherited the copy baseline.
+        self.assertEqual(s['versions'][1]['snapshot']['Exposure2012'],.9)
+        self.assertEqual(len({v['photo_uuid'] for v in s['versions']}),2)
 
     def test_episode_binds_catalog_and_echoes_it_on_later_calls(self):
         self.assertEqual(self.s['catalog_identity'], CATALOG_IDENTITY)

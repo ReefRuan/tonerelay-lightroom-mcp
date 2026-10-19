@@ -6,6 +6,7 @@ The server must use the canonical Runtime factory and registry path. Registry
 objects remain process-local snapshots.
 """
 
+import base64
 import io
 import json
 import tempfile
@@ -34,6 +35,7 @@ class ThumbnailBridge:
         self.orientation = orientation
         self.calls = []
         self.outputs = {}
+        self.dimensions = (32, 24)
 
     def reachable(self):
         return True
@@ -53,7 +55,7 @@ class ThumbnailBridge:
             assert params.get("expected_access_mode") == "full"
             ref = f"thumb-{len(self.outputs)}"
             buffer = io.BytesIO()
-            Image.new("RGB", (32, 24), (120, 80, 40)).save(buffer, format="JPEG")
+            Image.new("RGB", self.dimensions, (120, 80, 40)).save(buffer, format="JPEG")
             self.outputs[ref] = buffer.getvalue()
             return {"output_ref": ref, "method": "requestJpegThumbnail",
                     "purpose": "fast", "freshness": "unverified",
@@ -95,6 +97,68 @@ class PreviewProtocolTests(unittest.TestCase):
         self.workbench = Workbench(Store(Path(self.tmp.name)), self.bridge)
         self.server = McpServer(self.workbench)
 
+    @staticmethod
+    def displays(payload):
+        return [json.loads(block["text"])["display"] for block in payload["content"]
+                if block["type"] == "text" and "display" in json.loads(block["text"])]
+
+    def test_local_reference_exists_for_oversized_lightroom_thumbnail(self):
+        # A real Lightroom call requested 1024 and returned 1512x1008.
+        # The body needs a real reference even when the native block is resized.
+        self.bridge.dimensions = (1512, 1008)
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
+            payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview",
+                                            {"photo_uuid": "photo-1", "max_edge": 1024}))
+        displays = self.displays(payload)
+        self.assertEqual(len(displays), 1, "missing usable reply-body image reference")
+        reference = displays[0]
+        self.assertEqual(reference["kind"], "local_file")
+        path = Path(reference["path"])
+        self.assertTrue(path.is_absolute() and path.is_file())
+        native = next(block for block in payload["content"] if block["type"] == "image")
+        self.assertEqual(path.read_bytes(), base64.b64decode(native["data"]))
+        with Image.open(path) as image:
+            self.assertLessEqual(max(image.size), 1024)
+
+    def test_local_delivery_keeps_native_image_and_reuses_reference(self):
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "0"}):
+            normal = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+        self.assertEqual(self.displays(normal), [])
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
+            first = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+            path = Path(self.displays(first)[0]["path"])
+            modified = path.stat().st_mtime_ns
+            again = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+        self.assertEqual(self.displays(first), self.displays(again))
+        self.assertEqual(path.stat().st_mtime_ns, modified)
+        native = lambda payload: [block for block in payload["content"] if block["type"] == "image"]
+        self.assertEqual(native(normal), native(first))
+        self.assertEqual(native(first), native(again))
+        self.assertEqual(path.read_bytes(), base64.b64decode(native(first)[0]["data"]))
+        self.assertEqual(sum(name == "request_jpeg_thumbnail" for name, _ in self.bridge.calls), 1)
+
+    def test_local_delivery_is_default_and_only_explicit_zero_disables_it(self):
+        native = lambda payload: [block for block in payload["content"] if block["type"] == "image"]
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "0"}):
+            disabled = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+        self.assertEqual(self.displays(disabled), [])
+        self.assertFalse((self.workbench.store.root / "image-delivery").exists())
+        for value in (None, "1"):
+            with self.subTest(value=value), mock.patch.dict("os.environ", {}):
+                if value is None:
+                    server_module.os.environ.pop("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", None)
+                else:
+                    server_module.os.environ["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"] = value
+                payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+            self.assertEqual(native(payload), native(disabled))
+            references = self.displays(payload)
+            self.assertEqual(len(references), 1)
+            self.assertEqual(references[0]["kind"], "local_file")
+            self.assertEqual(references[0]["image_index"], 0)
+            self.assertEqual(Path(references[0]["path"]).read_bytes(),
+                             base64.b64decode(native(payload)[0]["data"]))
+        self.assertEqual(sum(name == "request_jpeg_thumbnail" for name, _ in self.bridge.calls), 1)
+
     def test_schema_pins_the_arguments_the_handler_validates(self):
         tools = {tool["name"]: tool for tool in self.server.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]}
@@ -132,8 +196,9 @@ class PreviewProtocolTests(unittest.TestCase):
         rendered = tool_payload(call_tool(self.server, "trlr_get_photo_preview",
                                           {"photo_uuid": "photo-1", "size": 640,
                                            "max_edge": 64}))
-        self.assertEqual(len(rendered["content"]), 2)
-        self.assertEqual(rendered["content"][1]["type"], "image")
+        self.assertEqual(len(rendered["content"]), 3)
+        self.assertEqual(self.displays(rendered)[0]["kind"], "local_file")
+        self.assertEqual(rendered["content"][2]["type"], "image")
         first = json.loads(rendered["content"][0]["text"])
         self.assertFalse(first["cached"])
         self.assertEqual(first["freshness"], "unverified")
@@ -163,7 +228,7 @@ class McpStartupTests(unittest.TestCase):
         workbench = build_workbench()
         self.assertIsInstance(workbench.lrops, LrOpsRouter)
         self.assertEqual(workbench.lrops.registry.path,
-                         workbench.store.root / "targets.json")
+                         workbench.store.root / "config.json")
         self.assertEqual(workbench.lrops.target_id, "local")
 
     def test_main_serves_a_router_backed_workbench(self):
@@ -172,7 +237,7 @@ class McpStartupTests(unittest.TestCase):
         workbench = mcp.call_args[0][0]
         self.assertIsInstance(workbench.lrops, LrOpsRouter)
         self.assertEqual(workbench.lrops.registry.path,
-                         workbench.store.root / "targets.json")
+                         workbench.store.root / "config.json")
 
     def test_the_preview_tool_is_still_registered(self):
         names = {tool["name"] for tool in TOOLS}
