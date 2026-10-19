@@ -2,11 +2,13 @@
 
 ### 把想要的效果说出来，和 Agent 一起把照片修到满意。
 
+> 源码预览：当前提供源码与安装说明，尚未发布稳定安装包或声明完成全平台验收。安装时请固定提交，并按 [INSTALL.md](INSTALL.md) 核验实际环境。
+
 面向摄影与 Adobe Lightroom Classic 的本地 MCP 修图工具。在对话里查看当前照片和目录预览、按参考图调色、细调人物与光影，也能整理一整组照片。看过结果后继续说哪里要改，编辑结果留在 Lightroom Classic 中。
 
 A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: conversational AI photo editing, reference-based color matching and color grading, subject masks, photo previews, and batch photo culling through an AI agent.
 
-**[看实际效果](https://reefruan.github.io/tonerelay-portal/#experience) · [风格与效果画廊](https://reefruan.github.io/tonerelay-portal/#gallery) · [安装与使用](https://reefruan.github.io/tonerelay-portal/lightroom-classic-mcp/) · [联系作者](https://reefruan.github.io/tonerelay-portal/contact.html)**
+**[安装指南](INSTALL.md) · [使用指南](USAGE.md) · [看实际效果](https://reefruan.github.io/tonerelay-portal/#experience) · [风格与效果画廊](https://reefruan.github.io/tonerelay-portal/#gallery) · [Portal 仓库](https://github.com/ReefRuan/tonerelay-portal) · [Bilibili 主页](https://space.bilibili.com/2869626) · [Star MCP](https://github.com/ReefRuan/tonerelay-lightroom-mcp)**
 
 ## 看过一版，再接着修
 
@@ -58,7 +60,7 @@ A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: convers
 
 > 开始 Lightroom 修图。
 
-完整安装包含 Lightroom 插件、ToneRelay MCP 和客户端启动 Skill。支持的安装入口、客户端接入和平台说明见 **[安装与使用页面](https://reefruan.github.io/tonerelay-portal/lightroom-classic-mcp/)**；也可以把 **[安装提示词](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)** 交给 Agent 执行。
+完整安装包含 Lightroom 插件、ToneRelay MCP 和客户端启动 Skill。支持的安装入口、客户端接入和平台说明以本仓 **[INSTALL.md](INSTALL.md)** 为准；也可以把 Portal 保留的 **[安装提示词](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)** 交给 Agent 执行。
 
 ## Source installation
 
@@ -97,6 +99,10 @@ ToneRelay 是独立项目，非 Adobe 官方产品，与 Adobe 无隶属或背�
 
 ## 许可证
 
-本仓库中作者原创的代码、运行 Prompt、Skill 与说明采用 [MIT License](LICENSE)。第三方依赖继续适用各自的许可证；Adobe 软件、产品及商标不由本项目授权。照片、参考图及截图素材不纳入代码的 MIT 授权，按其[来源与原许可](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)处理。独立的 Portal 仓库继续采用它自己的许可。
+Copyright (C) 2026 Reef Ruan。
+
+本仓库当前版本中作者原创的代码、运行 Prompt、Skill 与说明采用 [GNU AGPL-3.0-only](LICENSE)，与 [Portal](https://github.com/ReefRuan/tonerelay-portal) 一致。第三方依赖继续适用各自的许可证；Adobe 软件、产品及商标不由本项目授权。照片、参考图及截图素材不纳入代码的 AGPL 授权，按其[来源与原许可](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)处理。历史提交保留当时附带的许可证，不改写 Git 历史。
+
+作者主页：[GitHub](https://github.com/ReefRuan) · [Bilibili](https://space.bilibili.com/2869626) · [联系作者](https://reefruan.github.io/tonerelay-portal/contact.html)。
 
 **[进入 ToneRelay Portal →](https://reefruan.github.io/tonerelay-portal/)**
