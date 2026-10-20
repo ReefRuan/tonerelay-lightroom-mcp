@@ -8,9 +8,9 @@
 
 A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: conversational AI photo editing, reference-based color matching and color grading, subject masks, photo previews, and batch photo culling through an AI agent. View your selected photo and folder previews, refine people and lighting, then keep discussing the result. Edits remain in Lightroom Classic.
 
-## [Open ToneRelay Portal · Explore features and real editing results →](https://reefruan.github.io/tonerelay-portal/?lang=en)
+## [Open ToneRelay Portal · Explore features, real editing results, and installation guidance →](https://reefruan.github.io/tonerelay-portal/?lang=en#experience)
 
-<a href="https://reefruan.github.io/tonerelay-portal/?lang=en"><img src="assets/readme/gallery-preview.png" alt="Style references on ToneRelay Portal; click to explore features, real editing workflows, and reference looks" width="960"></a>
+<a href="https://reefruan.github.io/tonerelay-portal/?lang=en#experience"><img src="assets/readme/portal-experience.jpg" alt="Real editing examples on the ToneRelay Portal experience page; click for features, workflows, and installation guidance" width="960"></a>
 
 **[Portal source](https://github.com/ReefRuan/tonerelay-portal) · [One-click installation](#one-click-installation)**
 
@@ -28,6 +28,8 @@ The left shows Lightroom itself; the right shows the reference, two rounds of co
 
 ## From one photo to a whole set
 
+[![ToneRelay MCP tool directory: Develop settings and readback, batch operations and export, image measurement and comparison](assets/readme/mcp-tools-list.en.jpg)](assets/readme/mcp-tools-list.en.jpg)
+
 | What you want to do | What you can say |
 | --- | --- |
 | View the selected photo and nearby images | “Show my currently selected photo, then show 10 previews from the same folder.” |
@@ -35,6 +37,12 @@ The left shows Lightroom itself; the right shows the reference, two rounds of co
 | Refine a person and the background | “Keep the background's current feel, and refine the subject's exposure and shadows.” |
 | Cull and organize photos | “Review this set and suggest ratings and flags first. Write them back only after I confirm.” |
 | Explore styles and effects | “Compare different style references and discuss which one suits this photo.” |
+
+### Cull in the background, mark photos your way
+
+ToneRelay provides tools for browsing, comparing, and marking photos in batches while Lightroom runs in the background. You choose the culling criteria; the agent can use Lightroom Classic's native ratings, flags, and color labels to record the results.
+
+[![Lightroom batch culling and organization: folder grid, two-photo comparison, and the agent's rating and flag writeback records](assets/readme/batch-workflow.png)](assets/readme/batch-workflow.png)
 
 ### Balance subject exposure with overall lighting
 
@@ -49,12 +57,6 @@ Combine global tone changes with local subject adjustments. Review the actual im
 Lighting and subjects vary from one photo to another. The agent can assess each image against the references, then bring the adjustments back into Lightroom for review.
 
 [![Reference-based Lightroom color workflow: multiple references, choosing a direction for each photo's lighting, and reading back the color-grading result](assets/readme/reference-color.png)](assets/readme/reference-color.png)
-
-### Keep your culling decisions in Lightroom
-
-After reviewing and comparing photos, write ratings, flags, or color labels for the confirmed task while protecting existing marks.
-
-[![Lightroom batch culling and organization: folder grid, two-photo comparison, and the agent's rating and flag writeback records](assets/readme/batch-workflow.png)](assets/readme/batch-workflow.png)
 
 These presentation images come from Portal; trimming and rounded corners are for page layout only. The Lightroom and agent conversations within them come from the author's earlier real workflows; photo editing was not rerun for the capture. No photos were redrawn, conversations altered, or results fabricated. They are not speed or token-use benchmarks. [View the original material sources](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md). Results depend on the photo, reference target, and model used. Screenshots retain their original interface and conversation language.
 

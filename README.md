@@ -8,9 +8,9 @@
 
 面向摄影与 Adobe Lightroom Classic 的本地 MCP 修图工具。在对话里查看当前照片和目录预览、按参考图调色、细调人物与光影，也能整理一整组照片。看过结果后继续说哪里要改，编辑结果留在 Lightroom Classic 中。
 
-## [打开 ToneRelay Portal · 看功能与真实修图效果 →](https://reefruan.github.io/tonerelay-portal/)
+## [打开 ToneRelay Portal · 看功能、真实修图效果与安装教程 →](https://reefruan.github.io/tonerelay-portal/#experience)
 
-<a href="https://reefruan.github.io/tonerelay-portal/"><img src="assets/readme/gallery-preview.png" alt="ToneRelay Portal 中的风格参考预览，点击查看功能介绍、真实修图过程与风格参考" width="960"></a>
+<a href="https://reefruan.github.io/tonerelay-portal/#experience"><img src="assets/readme/portal-experience.jpg" alt="ToneRelay Portal 体验页中的真实修图展示，点击查看功能、修图过程与安装教程" width="960"></a>
 
 **[Portal 源码](https://github.com/ReefRuan/tonerelay-portal) · [一键安装](#一键安装)**
 
@@ -28,6 +28,8 @@ Portal 集中展示对话修图、参考图仿色、人物与光影调整，以�
 
 ## 从一张照片，到一整组照片
 
+[![ToneRelay MCP 工具一览：修图参数与回读、批量操作与导出、图片测量与对比](assets/readme/mcp-tools-list.zh.jpg)](assets/readme/mcp-tools-list.zh.jpg)
+
 | 你想做的事 | 可以这样说 |
 | --- | --- |
 | 查看当前照片与同目录图片 | “看看我当前选中的照片，再给我看同目录的 10 张预览。” |
@@ -35,6 +37,12 @@ Portal 集中展示对话修图、参考图仿色、人物与光影调整，以�
 | 细调人物与背景 | “背景保留现在的感觉，把人物曝光和暗部再修一下。” |
 | 选片与整理 | “看看这组照片，先提出星级和旗标建议，我确认后再写回。” |
 | 探索风格与效果 | “比较不同风格参考，讨论哪一种适合这张照片。” |
+
+### 后台批量选片，按你的标准打标
+
+ToneRelay 提供后台批量浏览、比较和打标工具。如何选片，由你定标准；Agent 可以直接使用 Lightroom Classic 的星级、旗标和颜色标签记录结果。
+
+[![Lightroom 批量选片与照片整理：目录网格、双图比较以及 Agent 星级和旗标写回记录](assets/readme/batch-workflow.png)](assets/readme/batch-workflow.png)
 
 ### 人物曝光与整体光影一起调整
 
@@ -49,12 +57,6 @@ Portal 集中展示对话修图、参考图仿色、人物与光影调整，以�
 同一组照片的光线和主体各不相同。Agent 可以结合参考图逐张判断，再把调整结果带回 Lightroom 继续查看。
 
 [![Lightroom 参考图仿色工作流：多张参考图、按照片光线选择方向并回读调色结果](assets/readme/reference-color.png)](assets/readme/reference-color.png)
-
-### 在 Lightroom 里保留选片结果
-
-浏览、比较照片后，可以按当前任务写入星级、旗标或颜色标签，并保护已有标记。
-
-[![Lightroom 批量选片与照片整理：目录网格、双图比较以及 Agent 星级和旗标写回记录](assets/readme/batch-workflow.png)](assets/readme/batch-workflow.png)
 
 以上展示图取自 Portal，裁边与圆角仅用于页面排版；其中的 Lightroom 与 Agent 对话来自作者此前的实际工作流，并非本轮重新执行修图。没有重绘照片、修改对话或虚构结果，也不作为速度或 Token 对照测试。[查看实际素材来源](https://github.com/ReefRuan/tonerelay-portal/blob/main/public/experience/SOURCES.md)。具体效果取决于照片、参考目标和所用模型。
 
