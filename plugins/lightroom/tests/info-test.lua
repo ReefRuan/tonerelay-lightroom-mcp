@@ -7,7 +7,7 @@ assert(manifest.LrInitPlugin == 'AutoStart.lua', 'LrInitPlugin must point to Aut
 assert(manifest.LrShutdownPlugin == 'Shutdown.lua', 'plugin shutdown must retire the polling generation')
 assert(manifest.LrForceInitPlugin == true, 'LrForceInitPlugin must force startup initialization')
 assert(manifest.VERSION.major == 0 and manifest.VERSION.minor == 6
-  and manifest.VERSION.revision == 2, 'plug-in manifest version must match the 0.6.2 Runtime')
+  and manifest.VERSION.revision == 0, 'plug-in manifest version must match the 0.7.0 Runtime')
 assert(manifest.VERSION.build == 3, 'plug-in manifest build must identify polling lifecycle support')
 assert(type(manifest.LrLibraryMenuItems) == 'table' and #manifest.LrLibraryMenuItems > 0,
   'plugin must expose at least one Library menu item')

@@ -58,12 +58,12 @@ local function snapshotValues(uuid, rating, pick, label, color)
     elseif color == 'none' then status = 'empty' end
     -- A value snapshot, not an SDK revision or a security token. Include raw
     -- label text so white/custom labels and changed label sets stay protected.
-    local token = 'marks-v1:' .. tostring(rating) .. ':' .. tostring(pick)
+    local signature = 'marks-v1:' .. tostring(rating) .. ':' .. tostring(pick)
         .. ':' .. #label .. ':' .. label .. ':' .. (color or '?') .. ':native=' .. nativeColor
     return { photo_uuid=uuid, rating=rating,
         flag=pick == 1 and 'pick' or (pick == -1 and 'reject' or 'unflagged'),
         color_label=color, color_label_status=status, label_text=label,
-        marks_token=token,
+        marks_token=signature,
         has_any_marks=rating > 0 or pick ~= 0 or label ~= '' or color ~= 'none' }
 end
 

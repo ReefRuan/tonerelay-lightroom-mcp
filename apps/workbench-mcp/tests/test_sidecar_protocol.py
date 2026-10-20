@@ -5,14 +5,14 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import McpServer, TOOLS
 
 
 class SidecarProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.wb = Workbench(Store(Path(self.tmp.name)), Mock())
+        self.wb = Workbench(RuntimeState(Path(self.tmp.name)), Mock())
         self.wb.run = Mock(return_value={'status': 'inspected', 'photo_uuid': 'master', 'expected_token': 'a' * 64})
         self.server = McpServer(self.wb)
 

@@ -20,7 +20,7 @@ from PIL import Image
 
 from workbench.lrops import FastThumbnailUnavailable, LrOpsError
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import McpServer
 
 
@@ -171,7 +171,7 @@ class SelectionProtocolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.bridge = SelectionGalleryBridge()
-        self.workbench = Workbench(Store(Path(self.tmp.name)), self.bridge)
+        self.workbench = Workbench(RuntimeState(Path(self.tmp.name)), self.bridge)
         self.server = McpServer(self.workbench)
 
     def test_tools_have_bounded_and_path_free_schemas(self):

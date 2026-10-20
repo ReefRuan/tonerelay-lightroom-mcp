@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from workbench.presentation import PresentationSettings
-from workbench.store import StoreError
+from workbench.state import StoreError
 
 
 class PresentationSettingsTests(unittest.TestCase):

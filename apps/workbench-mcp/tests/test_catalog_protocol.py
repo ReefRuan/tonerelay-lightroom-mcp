@@ -13,7 +13,7 @@ from pathlib import Path
 from workbench.runtime import Workbench
 from workbench.catalog import CatalogTools
 from workbench.lrops import LrOpsError
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import McpServer, TOOLS
 
 CATALOG_IDENTITY = "catalog-md5-v1:0123456789abcdef0123456789abcdef"
@@ -122,6 +122,8 @@ class CatalogProtocolTests(unittest.TestCase):
         # The listing tool keeps its name; no second, synonymous photo tool.
         photo_tools = sorted(name for name in tools if "photo" in name)
         self.assertEqual(photo_tools, ["trlr_get_photo_marks", "trlr_get_photo_preview",
+                                       "trlr_get_photo_settings",
+                                       "trlr_import_photos",
                                        "trlr_list_photos", "trlr_set_photo_marks",
                                        "trlr_studio_photos", "trlr_undo_photo_marks",
                                        "trlr_upload_photo"])
@@ -196,7 +198,7 @@ class CatalogRuntimeProtocolTests(unittest.TestCase):
         # filter authority and the MCP payload must match Lightroom's page.
         late = photo("u9", "zzz_last.NEF", rating=5)
         bridge = FakeBridge({"search_photos": lambda params: page_for(params, [late])})
-        wb = Workbench(Store(Path(self.tmp.name)), bridge)
+        wb = Workbench(RuntimeState(Path(self.tmp.name)), bridge)
         server = McpServer(wb)
         payload = tool_payload(call_tool(server, "trlr_list_photos",
                                          {"limit": 1, "name_contains": "aaa"}))

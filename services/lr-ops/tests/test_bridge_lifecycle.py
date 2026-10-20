@@ -155,14 +155,14 @@ class BridgeLifecycleTests(unittest.TestCase):
 
     def test_credentials_are_preserved_and_never_returned(self):
         self.use_builtin_owner()
-        token = "local-test-credential"
+        credential = "local-test-credential"
         with mock.patch.object(self.manager, "_health", return_value=self.matching(True)), mock.patch("urllib.request.build_opener") as opener:
             opener.return_value.open.return_value.__enter__.return_value.read.return_value = b'{"ok":true}'
-            result = self.manager.ensure("http://127.0.0.1:17777", token)
+            result = self.manager.ensure("http://127.0.0.1:17777", credential)
             self.assertEqual(result, {"mode": "builtin", "status": "reused"})
-            self.assertNotIn(token, json.dumps(result))
+            self.assertNotIn(credential, json.dumps(result))
             req = opener.return_value.open.call_args.args[0]
-            self.assertEqual(req.get_header("X-lr-xmp-token"), token)
+            self.assertEqual(req.get_header("X-lr-xmp-token"), credential)
         with mock.patch.object(self.manager, "_health", return_value=self.matching(True)):
             with self.assertRaisesRegex(BridgeStartError, "credential_mismatch"):
                 self.manager.ensure("http://127.0.0.1:17777")

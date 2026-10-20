@@ -6,7 +6,7 @@ episode inherit the source's current develop state.
 File locks serialize Runtime writers; atomic JSON commits keep reads coherent.
 No automatic replay after an uncertain LR write or process interruption.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import threading
@@ -26,7 +26,7 @@ except ImportError:  # POSIX
     msvcrt = None
 
 from .imaging import compare, sha
-from ..artifacts import build_artifact_ref
+from ..artifacts import MAX_BYTES as ARTIFACT_MAX_BYTES, build_artifact_ref
 from ..targets import TargetError, normalize_access_mode, normalize_catalog_identity
 from .settings import (ALLOW_PASSTHROUGH, ALLOW_STRUCTURED, BOUNDS, CURVES, WB_KEYS,
                        FAMILIES, UNSUPPORTED_CAPABILITIES, is_number,
@@ -37,7 +37,7 @@ from . import parameter_specs
 # unfinished Episode written by an older Runtime is detected as interrupted
 # instead of looking ready. New code never writes those statuses.
 ACTIVE = {'creating', 'editing', 'searching', 'rendering_parameter_variants',
-          'verifying', 'restoring', 'exploring', 'probing'}
+          'verifying', 'restoring', 'replaying', 'exploring', 'probing'}
 
 # Name prefix for every virtual copy an Episode renders; MCP-created copies
 # are recognized (and can be continued) by this prefix.
@@ -126,6 +126,16 @@ def fingerprint(value):
     return hashlib.sha256(payload).hexdigest()
 
 
+def settings_diff(a, b):
+    """Exact saved-value differences, including absent keys and structured values."""
+    return {
+        'changed': {key: [a[key], b[key]] for key in sorted(a.keys() & b.keys())
+                    if a[key] != b[key]},
+        'added': {key: b[key] for key in sorted(b.keys() - a.keys())},
+        'removed': {key: a[key] for key in sorted(a.keys() - b.keys())},
+    }
+
+
 def omitted_snapshot(value):
     """Compact stand-in for a develop snapshot omitted from a public response.
 
@@ -168,6 +178,11 @@ def validate_query(query):
     return query.strip()
 
 
+def validate_label(label):
+    if not isinstance(label, str) or len(label) > 120:
+        raise ValueError('label must be at most 120 characters')
+
+
 def matches(query, values):
     text = ' '.join(str(value) for value in values if value is not None).casefold()
     return not query or all(token in text for token in query.casefold().split())
@@ -202,6 +217,7 @@ def public_state(state, include_snapshots=True):
     Runtime versions remain summaries because their original values are lost.
     """
     result = json.loads(json.dumps(state))
+    result.setdefault('label', '')
     if not include_snapshots:
         for key in ('source_snapshot', 'baseline_snapshot'):
             if isinstance(result.get(key), dict):
@@ -404,7 +420,7 @@ class Studio:
             # source_uuid 是调用方判断「这张图有没有已存在的上下文」的唯一可靠依据；
             # 只按 source_name 匹配会在同名文件上接错历史。
             row = {k: s.get(k) for k in ('id', 'mode', 'status', 'revision', 'created_at',
-                                         'updated_at', 'intent', 'source_uuid', 'source_name',
+                                         'updated_at', 'intent', 'label', 'source_uuid', 'source_name',
                                          'current_version', 'target_id', 'ui_context')}
             # 列表只返回版本摘要，避免把完整 Episode 状态带入筛选请求：
             # 每版的虚拟副本 uuid、预览名、是否通过 XMP 回放验证。
@@ -711,12 +727,107 @@ class Studio:
         """读回这张照片的全部显影设置。
 
         ``get_develop_snapshot`` 在插件侧直接返回 ``photo:getDevelopSettings()``
-        的原始全量（实测 171 个键），**不受任何白名单限制** —— 包括蒙版那类嵌套结构。
+        的原始全量，**不受任何白名单限制** —— 包括蒙版那类嵌套结构。
         所以「用户在 Lightroom 界面里手动做的修改看不见」这个担心不成立，
         读回一直是完整的。
         """
         return self.run('get_develop_snapshot', {'photo_uuid': photo},
                         catalog_identity=catalog_identity)
+
+    def photo_settings(self, photo_uuid, format='both'):
+        """Read live settings on one pinned Catalog, without editing or rendering.
+
+        Matching full SDK reads establish stability during this observation;
+        they cannot guarantee a later UI state or validate an XMP/render.
+        """
+        if not isinstance(photo_uuid, str) or not photo_uuid.strip():
+            raise ValueError('photo_uuid must be a nonempty string')
+        if format not in ('json', 'xmp', 'both'):
+            raise ValueError('format must be json, xmp or both')
+        client = self.client.pin() if hasattr(self.client, 'pin') else self.client
+        reader = Studio(self.root.parent, client)
+        probe = reader.probe()
+        identity = probe['catalog_identity']
+        reads = []
+        for _ in range(2):
+            snapshot = reader.snapshot(photo_uuid, identity)
+            if (not isinstance(snapshot, dict)
+                    or not isinstance(snapshot.get('settings'), dict)
+                    or not isinstance(snapshot.get('photo'), dict)
+                    or snapshot['photo'].get('uuid') != photo_uuid):
+                raise ValueError('Invalid full settings readback for requested photo')
+            reads.append(snapshot)
+        settings = reads[-1]['settings']
+        digest = fingerprint(settings)
+        if fingerprint(reads[0]['settings']) != digest:
+            raise Conflict('Photo settings changed during readback; read again')
+        result = {
+            'schema_version': 'photo-settings-v1',
+            'photo_uuid': photo_uuid,
+            'source': {'kind': 'catalog_photo', 'photo_uuid': photo_uuid,
+                       'target_id': reader.target_id, 'catalog_identity': identity},
+            'field_count': len(settings), 'settings_sha256': digest,
+            'observed_at': time.time(),
+            'evidence': {
+                'method': 'get_develop_snapshot', 'freshness': 'verified',
+                'evidence_status': 'stable_settings_readback',
+                'matching_reads': 2, 'color_space': None,
+                'color_evidence': 'not_applicable',
+                'scope': 'Matching live SDK settings reads only; not a render, '
+                         'Episode version snapshot, or XMP replay verification.',
+            },
+        }
+        if format in ('json', 'both'):
+            result['settings'] = settings
+        if format in ('xmp', 'both'):
+            from ..xmp_full import serialize_full_settings
+            result.update(serialize_full_settings(settings))
+            result['xmp_verification'] = 'unverified_serialization'
+        return result
+
+    @staticmethod
+    def saved_version(state, number):
+        """Resolve an immutable persisted version without consulting Lightroom."""
+        if type(number) is not int or not 0 <= number < len(state['versions']):
+            raise ValueError('Unknown version')
+        return state['versions'][number]
+
+    def version_diff(self, sid, version_a, version_b):
+        """Read one atomic snapshot without waiting for a concurrent writer.
+
+        observed_revision is the revision at read time; a concurrent writer may
+        publish a newer revision after this snapshot has been read.
+        """
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self.lock(sid))
+            except Conflict:
+                # Writers publish episode.json atomically, so even while a
+                # write owns the lock this is one coherent persisted snapshot.
+                pass
+            state = self.raw(sid)
+            a = self.saved_version(state, version_a)
+            b = self.saved_version(state, version_b)
+            if not isinstance(a.get('patch'), dict) or not isinstance(b.get('patch'), dict):
+                raise ValueError('Submitted settings unavailable for saved version')
+            snapshots = [v.get('snapshot') for v in (a, b)]
+            available = [isinstance(s, dict) and s.get('omitted') is not True
+                         for s in snapshots]
+            return {
+                'episode_id': sid, 'revision': state['revision'],
+                'observed_revision': state['revision'],
+                'version_a': version_a, 'version_b': version_b,
+                'basis': 'persisted_episode_versions',
+                'submitted_settings_diff': settings_diff(a['patch'], b['patch']),
+                'after_readback_diff': (settings_diff(*snapshots)
+                                        if all(available) else None),
+                'readback_available': {'a': available[0], 'b': available[1]},
+                'snapshot_sha256': {side: fingerprint(snapshot) if exists else None
+                                   for side, snapshot, exists
+                                   in zip(('a', 'b'), snapshots, available)},
+                'readback_mismatches_a': a.get('readback_mismatches', []),
+                'readback_mismatches_b': b.get('readback_mismatches', []),
+            }
 
     def export(self, sid, photo, relative, edge, catalog_identity=None):
         """Render one preview and land it in the episode directory.
@@ -754,7 +865,8 @@ class Studio:
         if not state.get('source_uuid'):
             raise ValueError('Episode has no source photo; create a new Episode with source_uuid')
 
-    def create(self, source_uuid, reference_uuid=None, same_capture=False, intent='', long_edge=1024, mode='same_capture_match', include_snapshots=True):
+    def create(self, source_uuid, reference_uuid=None, same_capture=False, intent='', long_edge=1024, mode='same_capture_match', include_snapshots=True, label=''):
+        validate_label(label)
         if mode not in ('same_capture_match', 'source_edit'):
             raise ValueError('Unknown episode mode')
         if mode == 'same_capture_match' and (same_capture is not True or not reference_uuid):
@@ -776,7 +888,8 @@ class Studio:
         state = {'id': sid, 'schema_version': 2, 'mode': mode, 'revision': 0, 'status': 'creating',
                  'created_at': now, 'updated_at': now, 'source_uuid': source_uuid,
                  'reference_uuid': reference_uuid, 'source_name': baseline['photo']['file_name'],
-                 'same_capture': mode == 'same_capture_match', 'intent': intent, 'renderer': probe, 'long_edge': long_edge,
+                 'same_capture': mode == 'same_capture_match', 'intent': intent, 'label': label,
+                 'renderer': probe, 'long_edge': long_edge,
                  'reference_sha256': None,
                  'source_snapshot': baseline['settings'], 'baseline_snapshot': baseline['settings'], 'versions': [],
                  'current_version': 0, 'messages': [], 'operations': {}, 'error': None,
@@ -908,23 +1021,31 @@ class Studio:
             return False
         if type(revision) is not int or state['revision'] != revision:
             raise Conflict('版本已更新，请重新读取会话后再操作')
-        if state['status'] in ('failed', 'interrupted'):
+        if state['status'] in ACTIVE or state['status'] in ('failed', 'interrupted'):
             raise Conflict('上次操作结果不确定，请检查 LR 后重新建会话')
         state['operations'][request_id] = {'input': operation, 'status': 'running'}
         state['error'] = None
         return True
 
     def action(self, sid, action, base_revision, request_id, **options):
-        if action not in ('edit', 'restore', 'verify', 'message'):
+        if action not in ('edit', 'restore', 'verify', 'replay', 'message'):
             raise ValueError('Unknown action')
         if action == 'edit':
             validate(options.get('settings'))
+        if action in ('edit', 'replay'):
             if not isinstance(options.get('note', ''), str) or len(options.get('note', '')) > 4000:
                 raise ValueError('Invalid edit note')
         if action == 'message':
             text, role = options.get('text'), options.get('role', 'user')
-            if not isinstance(text, str) or not text.strip() or len(text) > 4000 or role not in ('user', 'assistant'):
+            if 'text' not in options and 'label' not in options:
+                raise ValueError('Message requires text or label')
+            if ('text' in options and (not isinstance(text, str) or not text.strip()
+                                       or len(text) > 4000)):
                 raise ValueError('Invalid message')
+            if role not in ('user', 'assistant'):
+                raise ValueError('Invalid message')
+            if 'label' in options:
+                validate_label(options['label'])
         with self.lock(sid):
             state = self.raw(sid)
             if action != 'message':
@@ -941,28 +1062,42 @@ class Studio:
                 if action == 'edit':
                     current = self.check_version(state, state['current_version'])
                     self.validate_patch(state, {**current['patch'], **options['settings']})
-                elif action in ('restore', 'verify'):
+                elif action in ('restore', 'verify', 'replay'):
+                    if action == 'replay' and 'version' not in options:
+                        raise ValueError('Replay requires a saved version')
                     number = options.get('version', state['current_version'])
                     version = self.check_version(state, number)
+                    if action == 'replay':
+                        self.validate_patch(state, version['patch'])
                     if action == 'verify' and not version['patch']:
                         raise ValueError('基准版本没有可导出的修改参数')
             # draft 会话（还没绑原片）只允许 message，且留言不改变「待选原片」状态。
             state['status'] = 'draft' if not state.get('source_uuid') else {
                 'edit': 'editing', 'restore': 'restoring', 'verify': 'verifying',
+                'replay': 'replaying',
                 'message': 'ready'}[action]
             self.save(state)
             try:
                 if action == 'message':
-                    text = options.get('text')
-                    role = options.get('role', 'user')
-                    if not isinstance(text, str) or not text.strip() or len(text) > 4000 or role not in ('user', 'assistant'):
-                        raise ValueError('Invalid message')
-                    state['messages'].append({'role': role, 'text': text, 'time': time.time()})
+                    if 'text' in options:
+                        state['messages'].append({'role': options.get('role', 'user'),
+                                                  'text': options['text'], 'time': time.time()})
+                    if 'label' in options:
+                        state['label'] = options['label']
                 elif action == 'edit':
                     note = options.get('note', '显式参数修改')
                     patch = {**state['versions'][state['current_version']]['patch'], **options['settings']}
                     version = self.render_version(state, patch, note)
                     version['parent_version'] = state['current_version']
+                    state['versions'].append(version)
+                    state['current_version'] = version['version']
+                elif action == 'replay':
+                    original = self.saved_version(state, options['version'])
+                    patch = json.loads(json.dumps(original['patch']))
+                    version = self.render_version(
+                        state, patch, options.get('note', f'Replay v{options["version"]}'))
+                    version['parent_version'] = state['current_version']
+                    version['replayed_from_version'] = options['version']
                     state['versions'].append(version)
                     state['current_version'] = version['version']
                 elif action == 'restore':
@@ -984,9 +1119,7 @@ class Studio:
         return public_state(state, include_snapshots=include_snapshots)
 
     def check_version(self, state, number):
-        if type(number) is not int or not 0 <= number < len(state['versions']):
-            raise ValueError('Unknown version')
-        version = state['versions'][number]
+        version = self.saved_version(state, number)
         if not equivalent_snapshot(
                 self.snapshot(version['photo_uuid'], state.get('catalog_identity'))['settings'],
                 version['snapshot']):
@@ -1129,9 +1262,14 @@ class Studio:
 
     def artifact(self, sid, name):
         import re
-        if not re.fullmatch(r'(reference\.jpg|v\d+\.(jpg|xmp)|verification\d+\.json)', name):
+        if not isinstance(name, str) or not re.fullmatch(
+                r'(reference\.jpg|v\d+\.(jpg|xmp)|verification\d+\.json)', name):
             raise ValueError('Unknown artifact')
-        directory = self.directory(sid).resolve()
+        directory = self.directory(sid)
+        if (directory.is_symlink() or (directory / 'episode.json').is_symlink()
+                or (directory / name).is_symlink()):
+            raise ValueError('Artifact symlinks are not accepted')
+        directory = directory.resolve()
         path = (directory / name).resolve()
         if path.parent != directory or not path.is_file():
             raise ValueError('Artifact not found')
@@ -1157,3 +1295,30 @@ class Studio:
             if not report.get('passed') or sha(path) != report['xmp_sha256']:
                 raise ValueError('XMP has not passed replay verification')
         return path
+
+    def artifact_payload(self, sid, name):
+        """Capture the exact verified bytes served by adapters, with no LR calls.
+
+        ``artifact`` remains a local path API. Adapters must not verify a path
+        and then reopen it for delivery: a file may change between those reads.
+        """
+        path = self.artifact(sid, name)
+        with path.open('rb') as handle:
+            content = handle.read(ARTIFACT_MAX_BYTES + 1)
+        if not content or len(content) > ARTIFACT_MAX_BYTES:
+            raise ValueError('Artifact is empty or exceeds 64 MiB')
+        state = self.raw(sid)
+        expected = None
+        if name == 'reference.jpg':
+            expected = reference_digest(state)
+        elif name.endswith('.jpg'):
+            expected = self.saved_version(state, int(name[1:-4]))['sha256']
+        elif name.endswith('.xmp'):
+            report = self.saved_version(state, int(name[1:-4])).get('verification') or {}
+            if not report.get('passed'):
+                raise ValueError('XMP has not passed replay verification')
+            expected = report.get('xmp_sha256')
+        if name.endswith(('.jpg', '.xmp')):
+            if not expected or hashlib.sha256(content).hexdigest() != expected:
+                raise Conflict('Artifact bytes changed before delivery')
+        return path, content

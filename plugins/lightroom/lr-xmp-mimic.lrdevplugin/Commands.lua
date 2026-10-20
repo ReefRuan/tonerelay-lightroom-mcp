@@ -179,7 +179,7 @@ function Commands.probe_client(_)
         return {
             lr_version = LrApplication.versionString(),
             plugin_version = PLUGIN_VERSION,
-            build_id = 'poll-lifecycle-0.6.2-3',
+            build_id = 'poll-lifecycle-0.7.0-1',
             catalog_open = false,
             access_mode = Safety.getAccessMode(),
             catalog_authorized = false,
@@ -194,7 +194,7 @@ function Commands.probe_client(_)
     return {
         lr_version = LrApplication.versionString(),
         plugin_version = PLUGIN_VERSION,
-        build_id = 'poll-lifecycle-0.6.2-3',
+        build_id = 'poll-lifecycle-0.7.0-1',
         catalog_open = true,
         capabilities = { expected_catalog_identity = true, expected_access_mode = true,
             catalog_identity = true, develop_snapshot = true,

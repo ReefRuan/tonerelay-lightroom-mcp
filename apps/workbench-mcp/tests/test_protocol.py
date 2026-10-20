@@ -18,8 +18,7 @@ from workbench_mcp.server import McpServer, PROTOCOL_VERSION, TOOLS  # noqa: E40
 
 
 class FakeStore:
-    def get_session(self, sid):
-        return {"session_id": sid, "mode": "color_match", "rounds": []}
+    pass
 
 
 def photo(uuid, file_name):
@@ -95,8 +94,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(all(name.startswith("trlr_") for name in names))
         self.assertEqual([], [name for name in names
                               if not callable(getattr(self.server, f"_tool_{name}", None))])
-        self.assertIn("trlr_apply_settings", names)
-        self.assertIn("trlr_get_preview", names)
+        self.assertIn("trlr_replay_episode", names)
+        self.assertIn("trlr_get_photo_settings", names)
         self.assertIn("trlr_get_photo_preview", names)
 
     def test_legacy_tool_prefix_is_not_aliased(self):
@@ -125,7 +124,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("unknown tool", resp["result"]["content"][0]["text"])
 
     def test_missing_required_arg_is_error_result(self):
-        resp = self.rpc("tools/call", {"name": "trlr_get_session", "arguments": {}})
+        resp = self.rpc("tools/call", {"name": "trlr_get_photo_settings", "arguments": {}})
         self.assertTrue(resp["result"]["isError"])
 
     def test_unknown_method(self):

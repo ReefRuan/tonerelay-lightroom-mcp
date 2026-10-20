@@ -91,7 +91,7 @@ _GUIDES = {
             "Agent 通过 trlr_get_presentation_config 读取，再通过 trlr_set_presentation_config 保存用户指定值。",
             "保存后读回核对数值和影响范围。",
         ],
-        "takes_effect": "无需重启；影响后续图片回传、后续 Session 工作渲染和新 Episode 的初始渲染上限。已有产物、已有 Episode 上限和最终导出不变。",
+        "takes_effect": "无需重启；影响后续图片回传和新 Episode 的初始渲染上限。已有产物、已有 Episode 上限和最终导出不变。",
         "verification_fields": ["image_presentation.codex_preview_max_edge", "image_presentation.edit_render_max_edge", "image_presentation.config_status"],
     },
     "folder_access": {

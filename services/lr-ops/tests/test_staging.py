@@ -9,6 +9,7 @@ Lightroom. These tests pin two things:
    (``engine.py``: "LR wrote outside the scratch dir") still holds.
 """
 
+import hashlib
 import json
 import os
 import tempfile
@@ -78,6 +79,35 @@ class TestStagingUnit(unittest.TestCase):
             Path(out["output_dir"]),
             self.staging.output_dir("5c9d0c9e-1111-4222-8333-444455556666"),
         )
+
+    def test_persistent_import_dispatch_verifies_bytes_and_preserves_binding(self):
+        source = Path(self.tmp.name) / "persistent.jpg"
+        source.write_bytes(b"image")
+        descriptor = {"path": str(source), "bytes": 5,
+                      "sha256": hashlib.sha256(b"image").hexdigest()}
+        params = {"local_file": descriptor, "expected_access_mode": "safe",
+                  "expected_catalog_identity": "bound-catalog", "path": "/ignored.jpg"}
+        result = self.staging.inject_dispatch("import_photo", params, "job-1")
+        self.assertEqual(result, {"path": str(source), "expected_access_mode": "safe",
+                                  "expected_catalog_identity": "bound-catalog"})
+        source.write_bytes(b"changed")
+        with self.assertRaisesRegex(StagingError, "mismatch"):
+            self.staging.inject_dispatch("import_photo", params, "job-2")
+
+    def test_persistent_import_refuses_ambiguous_invalid_missing_and_symlink(self):
+        source = Path(self.tmp.name) / "original.jpg"
+        source.write_bytes(b"image")
+        link = source.with_name("link.jpg")
+        link.symlink_to(source)
+        good = {"path": str(source), "bytes": 5, "sha256": hashlib.sha256(b"image").hexdigest()}
+        for bad in ({**good, "path": "relative.jpg"}, {**good, "sha256": "invalid"},
+                    {**good, "bytes": True}, {**good, "path": str(link)},
+                    {**good, "path": str(source.with_name("absent.jpg"))},
+                    {**good, "extra": 1}, {**good, "path": str(source.parent)}):
+            with self.subTest(bad=bad), self.assertRaises(StagingError):
+                self.staging.inject_dispatch("import_photo", {"local_file": bad}, "job")
+        with self.assertRaisesRegex(StagingError, "exactly one source"):
+            self.staging.inject_dispatch("import_photo", {"local_file": good, "stage_id": "x"}, "job")
 
     def test_verify_output_accepts_its_own_directory(self):
         job_id = "6c9d0c9e-1111-4222-8333-444455556666"

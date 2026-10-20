@@ -56,7 +56,7 @@ class ArtifactRefTests(unittest.TestCase):
         self.path.unlink()
         ref = build_artifact_ref_from_bytes(
             content, filename="preview.jpg", artifact_id="snapshot:1",
-            source={"kind": "session_slot"}, purpose="verified",
+            source={"kind": "episode_render"}, purpose="verified",
             method="LrExportSession", freshness="verified",
             evidence_status="verified_render", color_space="sRGB",
         )

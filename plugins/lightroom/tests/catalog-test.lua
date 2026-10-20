@@ -553,7 +553,7 @@ end)
 test('probe advertises Catalog search and keeps every previous capability', function()
   usePhotos(defaultPhotos())
   local probe = Commands.probe_client({})
-  check(probe.build_id == 'poll-lifecycle-0.6.2-3',
+  check(probe.build_id == 'poll-lifecycle-0.7.0-1',
     'build_id: ' .. tostring(probe.build_id))
   check(probe.capabilities.catalog_search == true, 'catalog_search capability')
   check(probe.capabilities.expected_catalog_path == nil, 'path binding capability is retired')

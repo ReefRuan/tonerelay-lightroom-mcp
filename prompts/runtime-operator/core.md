@@ -72,7 +72,7 @@ Lightroom：已连接；Catalog：已授权（<实际 access mode>）
 查看大小直接读配置。明确要求修改时，先 `trlr_get_presentation_config`，按用户给定的边长调用 `trlr_set_presentation_config`，再读回；未说明改哪一种时澄清目标，不为一次预览调整全局设置。
 
 - `codex_preview_max_edge`：回传图片块的边长上限。对话中渲染、查看图片都走这条 1024 默认通道。
-- `edit_render_max_edge`：后续 Session 工作渲染及新建 Episode 固定的渲染上限。
+- `edit_render_max_edge`：新建 Episode 固定的工作渲染上限。
 
 两者不改变最终导出或已有不可变产物。
 

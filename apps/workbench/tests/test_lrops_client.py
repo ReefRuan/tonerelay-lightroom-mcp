@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from workbench.lrops import FastThumbnailUnavailable, LrOpsClient, LrOpsError
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 
 
 class FakeClient(LrOpsClient):
@@ -71,7 +71,7 @@ class TestLrOpsClient(unittest.TestCase):
                 patch("workbench.lrops.time.sleep", side_effect=advance), \
                 patch.object(client, "_request", wraps=client._request) as request:
             with self.assertRaisesRegex(LrOpsError, "probe_client timed out"):
-                Workbench(Store(Path(root)), client).current_selection()
+                Workbench(RuntimeState(Path(root)), client).current_selection()
             submitted = [call.args[2]["command"] for call in request.call_args_list
                          if call.args[0] == "POST"]
         self.assertEqual(submitted, ["probe_client"])

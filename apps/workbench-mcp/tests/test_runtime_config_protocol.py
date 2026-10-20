@@ -15,7 +15,7 @@ from workbench.catalog_discovery import catalog_identity_for_path
 from workbench.configuration_help import CONFIG_TOPICS
 CONFIG_ENV = "LR_XMP_MIMIC_FOLDER_CONFIG"
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench.targets import LrOpsRouter, TargetRegistry
 from workbench_mcp.server import TOOLS, McpServer
 from workbench_mcp import __version__
@@ -102,7 +102,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
             registry,
             client_factory=lambda base, token: FakeBridge(base, token, self.bridge_state),
         )
-        self.server = McpServer(Workbench(Store(self.root), router))
+        self.server = McpServer(Workbench(RuntimeState(self.root), router))
 
     def catalog_scan(self):
         return {
@@ -148,7 +148,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                     client_factory=lambda base, token: FakeBridge(
                         base, token, self.bridge_state),
                 )
-                server = McpServer(Workbench(Store(root), router))
+                server = McpServer(Workbench(RuntimeState(root), router))
                 snapshot = value(call(server, "trlr_get_runtime_config", {
                     "topic": "access_mode",
                 }))
@@ -441,7 +441,7 @@ class RuntimeConfigInteractionTestCase(unittest.TestCase):
                 state.reachable = live != "offline"
                 router = LrOpsRouter(
                     registry, client_factory=lambda base, token: FakeBridge(base, token, state))
-                server = McpServer(Workbench(Store(case_root), router))
+                server = McpServer(Workbench(RuntimeState(case_root), router))
                 before = (case_root / "config.json").read_bytes()
                 probe = (mock_patch.object(FakeBridge, "run", side_effect=TimeoutError("probe timeout"))
                          if live == "probe_failed" else nullcontext())

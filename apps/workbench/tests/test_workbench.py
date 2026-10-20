@@ -1,16 +1,14 @@
-"""Workbench tests: store persistence and the round pipeline with a fake LR."""
+"""Workbench facade tests with a fake LR."""
 
-import hashlib
 import io
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from PIL import Image
 
-from workbench.runtime import Workbench, settings_to_xmp
-from workbench.store import Store, StoreError
+from workbench.runtime import Workbench
+from workbench.state import RuntimeState, StoreError
 
 _jpeg_buffer = io.BytesIO()
 Image.new("RGB", (32, 24), (120, 80, 40)).save(_jpeg_buffer, format="JPEG")
@@ -127,7 +125,7 @@ class WorkbenchTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.store = Store(Path(self.tmp.name))
+        self.store = RuntimeState(Path(self.tmp.name))
         self.fake = FakeLrOps()
         self.wb = Workbench(self.store, self.fake)
 
@@ -166,7 +164,7 @@ class HealthBridge:
 class TestHealth(unittest.TestCase):
     def test_rejects_plugin_missing_current_selection_contract(self):
         with tempfile.TemporaryDirectory() as root:
-            wb = Workbench(Store(Path(root)), HealthBridge(
+            wb = Workbench(RuntimeState(Path(root)), HealthBridge(
                 current_folder_selection=False))
             health = wb.health()
 
@@ -176,37 +174,7 @@ class TestHealth(unittest.TestCase):
                          "unsupported_plugin_contract")
 
 
-class TestStore(WorkbenchTestBase):
-    def test_create_and_get_session(self):
-        s = self.store.create_session("a", "b", "color_match")
-        loaded = self.store.get_session(s["session_id"])
-        self.assertEqual(loaded["source_uuid"], "a")
-        self.assertEqual(loaded["rounds"], [])
-
-    def test_bad_mode_rejected(self):
-        with self.assertRaises(StoreError):
-            self.store.create_session("a", "b", "magic")
-
-    def test_session_id_cannot_escape_store_root(self):
-        for session_id in ("../outside", "/tmp/outside", "not-a-uuid"):
-            with self.subTest(session_id=session_id), self.assertRaisesRegex(
-                    StoreError, "invalid session id"):
-                self.store.get_session(session_id)
-
-    def test_add_round_increments(self):
-        s = self.store.create_session("a", "b", "style_match")
-        self.store.add_round(s["session_id"], {"Exposure2012": 0.3}, "/tmp/x.jpg")
-        r2 = self.store.add_round(s["session_id"], {"Exposure2012": 0.5}, "/tmp/y.jpg")
-        self.assertEqual(r2["round"], 2)
-        self.assertEqual(len(self.store.get_session(s["session_id"])["rounds"]), 2)
-
-    def test_list_sessions(self):
-        self.store.create_session("a", "b", "color_match")
-        self.store.create_session("c", "d", "style_match")
-        self.assertEqual(len(self.store.list_sessions()), 2)
-
-
-class TestRoundPipeline(WorkbenchTestBase):
+class TestPreview(WorkbenchTestBase):
     def test_fast_catalog_preview_uses_thumbnail_output_ref_and_cache(self):
         record = self.wb.preview_photo("src", size=640)
         self.assertEqual(record["method"], "requestJpegThumbnail")
@@ -219,57 +187,6 @@ class TestRoundPipeline(WorkbenchTestBase):
         cached = self.wb.preview_photo("src", size=640)
         self.assertTrue(cached["cached"])
         self.assertEqual(cached["key"], record["key"])
-
-    def test_session_creation_renders_both_slots(self):
-        s = self.wb.create_session("src", "ref", "style_match")
-        previews = self.store.preview_dir(s["session_id"])
-        self.assertTrue((previews / "source.jpg").exists())
-        self.assertTrue((previews / "reference.jpg").exists())
-        persisted = self.store.get_session(s["session_id"])["slot_previews"]
-        for slot in ("source", "reference"):
-            path = previews / f"{slot}.jpg"
-            self.assertEqual(persisted[slot]["sha256"],
-                             hashlib.sha256(path.read_bytes()).hexdigest())
-
-    def test_first_round_creates_copy_later_rounds_reuse(self):
-        s = self.wb.create_session("src", "ref", "color_match")
-        sid = s["session_id"]
-        self.wb.run_round(sid, {"Exposure2012": 0.4})
-        self.wb.run_round(sid, {"Saturation": -10})
-        self.assertEqual(self.fake.copy_count, 1)
-        session = self.store.get_session(sid)
-        self.assertEqual(session["working_copy_uuid"], "copy-1")
-        self.assertEqual(len(session["rounds"]), 2)
-        # Every round's preview is on disk and hashed.
-        for record in session["rounds"]:
-            path = Path(record["preview_path"])
-            self.assertTrue(path.exists())
-            self.assertEqual(record["preview_sha256"],
-                             hashlib.sha256(path.read_bytes()).hexdigest())
-
-    def test_preview_file_lookup(self):
-        s = self.wb.create_session("src", "ref", "color_match")
-        self.wb.run_round(s["session_id"], {"Exposure2012": 0.4})
-        path = self.store.preview_file(s["session_id"], 1)
-        self.assertEqual(path.read_bytes(), JPEG_STUB)
-        with self.assertRaises(StoreError):
-            self.store.preview_file(s["session_id"], 9)
-
-    def test_xmp_view_and_reset(self):
-        s = self.wb.create_session("src", "ref", "color_match")
-        self.wb.run_round(s["session_id"], {"Exposure2012": 0.75, "Saturation": -20})
-        view = self.wb.xmp_view(s["session_id"])
-        self.assertEqual(view["settings"]["Exposure2012"], 0.75)
-        self.assertIn('crs:Exposure2012="0.75"', view["xmp"])
-        self.assertIn('crs:Saturation="-20.00"', view["xmp"])
-        self.wb.reset(s["session_id"])
-        view = self.wb.xmp_view(s["session_id"])
-        self.assertEqual(view["settings"], {})
-
-    def test_settings_to_xmp_skips_unknown(self):
-        xmp = settings_to_xmp({"Exposure2012": 1.0, "Hacked": 5})
-        self.assertIn("Exposure2012", xmp)
-        self.assertNotIn("Hacked", xmp)
 
 
 class TestUpload(WorkbenchTestBase):

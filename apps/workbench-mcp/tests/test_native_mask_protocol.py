@@ -4,14 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import McpServer, TOOLS
 
 
 class NativeMaskProtocolTests(unittest.TestCase):
     def test_schema_dispatch_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
-            wb = Workbench(Store(Path(tmp)), Mock())
+            wb = Workbench(RuntimeState(Path(tmp)), Mock())
             wb.run = Mock(return_value={'status': 'created', 'segmentation_data_present': True})
             server = McpServer(wb)
             tool = next(t for t in TOOLS if t['name'] == 'trlr_native_mask')

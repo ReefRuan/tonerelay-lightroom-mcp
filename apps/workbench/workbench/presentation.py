@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .store import StoreError
+from .state import StoreError
 from lr_ops.configuration import ConfigError, for_workbench
 
 

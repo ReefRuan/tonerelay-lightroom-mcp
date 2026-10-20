@@ -14,7 +14,6 @@
 - 常规 Develop 修图不修改原片；每个 Episode 编辑版本使用独立虚拟副本。用户授权的星级、旗标和颜色标记可写目标照片，遵循“照片标记”的保护与撤销规则。SDK 创建虚拟副本依赖选片：目标在当前来源中时不强制切换目录或模块；跨来源请求可临时激活 All Photographs，完成后尝试恢复原目录、完整选片和模块。SDK 自身可能选中新副本，不能承诺创建过程中完全不改变画面。依据 `ui_context` 的实际恢复状态与告警说明结果，未核验时不能声称 UI 已恢复；存在恢复 warning 时如实说明。其它会改变界面的操作执行前简要提示影响，不假定能与真人无干扰并行修图。必要时在已授权目标内用 Agent 的 Computer Use 核验或恢复选片，不把恢复失败当作重新创建 Episode 的理由。
 - 用户明确批准独立 XMP 模式后，可在指定 RAW master 上使用 `trlr_update_xmp_sidecar` 与 `trlr_apply_mask`。沿用已确认授权，不重复询问同一范围；虚拟副本共享 master sidecar，不能把它当隔离目标。先 inspect，再传新鲜 token 和本次 request_id；需要原生元数据时按返回指引处理。sidecar_written 仅证明文件写入，未核对 Catalog 不宣称参数生效；蒙版必须按 correction ID verify，再看新预览，存在记录不证明范围正确。语义 AI 分割或元数据读取无法通过 XMP 完成时，用已有授权内的 Computer Use 按结构化原因恢复；Runtime 不自动运行 UI，也不自动重放未知写入。
 - 对既有 Episode 写入，凡 schema 要求就传刚读取的 `base_revision` 和逻辑动作唯一的 `request_id`；同一动作才可复用 request ID。`trlr_create_episode`、`trlr_stop_episode` 按各自 schema 调用。冲突或未知结果按恢复规则处理。
-- Session/round 仅兼容旧工作，没有 Episode 的并发控制及 Target/Catalog 身份绑定；只允许单调用者在固定 Target/Catalog 上串行使用，切换后不续写旧 Session。
 - Episode 消息是显式读取的状态，不会唤醒 Agent。只处理用户发起的任务；不建设后台轮询或自动消费消息。当前已提交异步作业的进度查询不等于消费新任务。
 
 ## UI 后备的授权与限制
@@ -28,7 +27,7 @@
 
 ## 文件与外部数据
 
-- 核心流程不要求 Agent 与 MCP Server 共享文件系统：Catalog 照片用 ID，图像由 MCP content 返回。`path`、`output_dir`、Session 的 `export_path` / `context_path` 均为 Server 本机路径；folder `root` 是不透明 key，Agent 本机文件不会自动上传。
+- 核心流程不要求 Agent 与 MCP Server 共享文件系统：Catalog 照片用 ID，图像由 MCP content 返回。`path`、`output_dir` 均为 Server 本机路径；folder `root` 是不透明 key，Agent 本机文件不会自动上传。
 - `trlr_folder_roots` 给出访问根。`config.json` 的 `folders.mode=full` 时覆盖 Runtime 主机账号可访问路径，`restricted` 则收窄到所列 roots；仍受 OS 权限、支持格式及隐藏/Lightroom/Git 系统目录过滤约束。只寻址用户任务涉及的目录；用户提供 Runtime 主机路径时使用对应 root 与相对目录，不遍历无关位置。
 - 目录扫描只读；RAW 导入渲染须明确获得 Catalog 写入授权，不能用它绕过快速预览不可用。
 - 不把照片、Episode、日志或产物写进源码树，不把一次编辑结果自动固化为知识、内容包或推荐规则。

@@ -14,9 +14,9 @@ return {
 
     VERSION = {
         major = 0,
-        minor = 6,
-        revision = 2,
-        build = 3,
+        minor = 7,
+        revision = 0,
+        build = 1,
     },
 
     LrPluginInfoProvider = 'PluginInfoProvider.lua',

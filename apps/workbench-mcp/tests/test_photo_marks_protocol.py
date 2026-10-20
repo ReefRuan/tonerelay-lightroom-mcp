@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import McpServer, TOOLS
 
 
@@ -50,7 +50,7 @@ class PhotoMarksProtocolTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.bridge = Bridge()
-        self.server = McpServer(Workbench(Store(Path(self.temp.name)), self.bridge))
+        self.server = McpServer(Workbench(RuntimeState(Path(self.temp.name)), self.bridge))
 
     def call(self, tool, arguments):
         response = self.server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",

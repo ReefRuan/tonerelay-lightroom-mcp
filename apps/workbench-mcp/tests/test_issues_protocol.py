@@ -27,18 +27,18 @@ class IssueStoreTests(unittest.TestCase):
 
     def test_record_and_list_newest_first(self):
         self.store.record("manual", "first")
-        second = self.store.record("tool_error", "second", tool="trlr_apply_settings")
+        second = self.store.record("tool_error", "second", tool="trlr_edit_episode")
         entries = self.store.list()
         self.assertEqual(len(entries), 2)
         self.assertEqual(entries[0]["id"], second["id"])
-        self.assertEqual(entries[0]["tool"], "trlr_apply_settings")
+        self.assertEqual(entries[0]["tool"], "trlr_edit_episode")
 
-    def test_filters_by_kind_and_session(self):
-        self.store.record("manual", "a", session_id="s1")
-        self.store.record("tool_error", "b", session_id="s2")
+    def test_filters_by_kind_and_episode(self):
+        self.store.record("manual", "a", episode_id="s1")
+        self.store.record("tool_error", "b", episode_id="s2")
         self.assertEqual(len(self.store.list(kind="manual")), 1)
-        self.assertEqual(len(self.store.list(session_id="s2")), 1)
-        self.assertEqual(len(self.store.list(kind="manual", session_id="s2")), 0)
+        self.assertEqual(len(self.store.list(episode_id="s2")), 1)
+        self.assertEqual(len(self.store.list(kind="manual", episode_id="s2")), 0)
 
     def test_limit_is_respected(self):
         for i in range(10):

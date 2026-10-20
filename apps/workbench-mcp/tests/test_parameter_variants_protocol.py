@@ -21,7 +21,7 @@ sys.path.insert(0, str(WB / "tests"))
 
 from test_studio import FakeLR  # noqa: E402
 from workbench.runtime import Workbench  # noqa: E402
-from workbench.store import Store  # noqa: E402
+from workbench.state import RuntimeState  # noqa: E402
 from workbench.studio.parameter_specs import parameter_records  # noqa: E402
 from workbench_mcp.server import McpServer, TOOLS  # noqa: E402
 
@@ -30,7 +30,7 @@ class ParameterVariantProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.wb = Workbench(Store(Path(self.tmp.name)), FakeLR())
+        self.wb = Workbench(RuntimeState(Path(self.tmp.name)), FakeLR())
         self.server = McpServer(self.wb)
 
     def result(self, name, **arguments):

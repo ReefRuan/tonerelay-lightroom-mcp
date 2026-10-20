@@ -403,8 +403,30 @@ class ImageTools:
                              analysis_edge=analysis_edge)
 
     def compare(self, left, right, mode='distribution', roi=None, max_edge=512):
+        # Normalize both addresses before reading either render.  The shortcut
+        # changes addressing only, never the persisted-source or alignment rules.
+        left = self._comparison_source(left)
+        right = self._comparison_source(right)
         left_image, left_meta = self._load(left)
         right_image, right_meta = self._load(right)
         return compare_images(
             left_image, left_meta, right_image, right_meta,
             mode=mode, roi=roi, max_edge=max_edge)
+
+    @staticmethod
+    def _comparison_source(source):
+        """Resolve a version shortcut to the existing published-render address."""
+        if not isinstance(source, dict):
+            raise ValueError('comparison source must be a nonempty object')
+        if set(source) == {'episode_id', 'name'}:
+            return source
+        if set(source) != {'episode_version'}:
+            raise ValueError('comparison source must be a published episode render '
+                             'or an episode_version address')
+        version = source['episode_version']
+        if not isinstance(version, dict) or set(version) != {'episode_id', 'version'}:
+            raise ValueError('episode_version requires only episode_id and version')
+        number = version['version']
+        if type(number) is not int or number < 0:
+            raise ValueError('episode_version version must be a nonnegative integer')
+        return {'episode_id': version['episode_id'], 'name': f'v{number}.jpg'}

@@ -25,7 +25,7 @@ from PIL import Image
 from workbench.runtime import Workbench
 from workbench.preview import MAX_BYTES as MAX_PREVIEW_BYTES
 from workbench.preview import PreviewStore
-from workbench.store import Store, StoreError
+from workbench.state import RuntimeState, StoreError
 from workbench.targets import LrOpsRouter, TargetRegistry, is_loopback_base
 
 WORKBENCH_APP = Path(__file__).resolve().parents[1]
@@ -279,7 +279,7 @@ class TestPreviewIdentity(unittest.TestCase):
         self.root = Path(self.tmp.name)
 
     def workbench(self, bridge):
-        return Workbench(Store(self.root), bridge)
+        return Workbench(RuntimeState(self.root), bridge)
 
     def test_local_fallback_names_the_local_target_and_catalog(self):
         wb = self.workbench(PreviewBridge(base="http://127.0.0.1:17777"))
@@ -355,7 +355,7 @@ class TestPreviewCaching(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.bridge = PreviewBridge(base="http://127.0.0.1:17777", orientation="AB")
-        self.wb = Workbench(Store(self.root), self.bridge)
+        self.wb = Workbench(RuntimeState(self.root), self.bridge)
 
     def test_cache_hit_reuses_the_render_metadata(self):
         rendered = self.wb.preview_photo("photo-1", size=640)
@@ -428,7 +428,7 @@ class TestPreviewPinning(unittest.TestCase):
             return bridge
 
         self.router = LrOpsRouter(self.registry, client_factory=factory)
-        self.wb = Workbench(Store(self.root), self.router)
+        self.wb = Workbench(RuntimeState(self.root), self.router)
 
     def test_a_switch_during_the_fetch_cannot_change_the_answer(self):
         self.registry.select(self.remote.id)

@@ -17,7 +17,7 @@ from .catalog import CatalogTools
 from .artifacts import build_artifact_ref
 from .folders import DEFAULT_EXTENSIONS, FolderLibrary
 from .lrops import FastThumbnailUnavailable, LrOpsClient, LrOpsError
-from .store import Store, StoreError
+from .state import RuntimeState, StoreError
 from .targets import DEFAULT_TARGET_ID, LrOpsRouter, TargetRegistry
 from .presets import PresetTools
 from .preview import PreviewStore
@@ -106,36 +106,10 @@ def preview_source(client, photo_uuid: str, probe: dict) -> dict:
     return source
 
 
-XMP_TAGS = {
-    "Exposure2012": "Exposure2012", "Contrast2012": "Contrast2012",
-    "Highlights2012": "Highlights2012", "Shadows2012": "Shadows2012",
-    "Whites2012": "Whites2012", "Blacks2012": "Blacks2012",
-    "Temperature": "Temperature", "Tint": "Tint",
-    "Vibrance": "Vibrance", "Saturation": "Saturation",
-}
-
-
-def settings_to_xmp(settings: dict) -> str:
-    lines = [
-        '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
-        ' <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
-        '  <rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"',
-    ]
-    for key, tag in XMP_TAGS.items():
-        value = settings.get(key)
-        if isinstance(value, (int, float)):
-            shown = f"{value:.2f}" if key not in ("Temperature", "Tint") else str(int(value))
-            lines.append(f'   crs:{tag}="{shown}"')
-    lines.append('  />')
-    lines.append(' </rdf:RDF>')
-    lines.append('</x:xmpmeta>')
-    return "\n".join(lines)
-
-
 class Workbench:
     """Protocol-neutral facade over Runtime state and Lightroom capabilities."""
 
-    def __init__(self, store: Store, lrops: LrOpsClient):
+    def __init__(self, store: RuntimeState, lrops: LrOpsClient):
         self.store = store
         self.lrops = lrops
         self._studio = None
@@ -447,7 +421,7 @@ class Workbench:
                 "config_status": presentation_status,
                 "codex_preview_scope": "subsequent MCP image responses",
                 "edit_render_scope": (
-                    "new Session work renders and the initial work-render cap of new Episodes; "
+                    "the initial work-render cap of new Episodes; "
                     "existing artifacts are unchanged"),
             },
             "folder_access": {
@@ -663,27 +637,6 @@ class Workbench:
             "health": self.health(),
         }
 
-    def create_session(self, source_uuid: str, reference_uuid: str, mode: str) -> dict:
-        session = self.store.create_session(source_uuid, reference_uuid, mode)
-        sid = session["session_id"]
-        # Render both slots once so the caller can compare immediately.
-        for slot, uuid_ in (("source", source_uuid), ("reference", reference_uuid)):
-            path = self._render_slot(uuid_, self.store.preview_dir(sid) / f"{slot}.jpg")
-            self.store.set_slot_preview(
-                sid, slot, str(path), hashlib.sha256(path.read_bytes()).hexdigest())
-        self.run("capture_baseline", {"photo_uuid": source_uuid})
-        return self.store.get_session(sid)
-
-    def _render_slot(self, photo_uuid: str, destination: Path) -> Path:
-        """Render one preview and pull the bytes back by handle."""
-        data = self.run("export_preview", {
-            "photo_uuid": photo_uuid,
-            "long_edge": self.presentation.get()["edit_render_max_edge"],
-        })
-        ref = data.get("output_ref")
-        if not ref:
-            raise LrOpsError("导出未返回文件句柄；请重启 lr-ops 桥以加载新协议")
-        return Path(self.lrops.fetch_output(ref, destination))
 
     def _pinned_current_folder(self, limit: int, offset: int):
         """Bind one volatile selection query to one target/Catalog probe.
@@ -870,80 +823,17 @@ class Workbench:
             "artifact": artifact,
         }
 
-    def run_round(self, session_id: str, settings: dict) -> dict:
-        session = self.store.get_session(session_id)
-        if not session.get("working_copy_uuid"):
-            copy = self.run("create_virtual_copy", {
-                "photo_uuid": session["source_uuid"],
-                "name": f"workbench {session_id[:8]}",
-            })
-            copy_uuid = copy["copy"]["uuid"]
-            self.store.set_working_copy(session_id, copy_uuid)
-            # Baseline is keyed by photo uuid, so capture it for the copy too —
-            # otherwise reset_to_baseline on the copy fails.
-            self.run("capture_baseline", {"photo_uuid": copy_uuid})
-        else:
-            copy_uuid = session["working_copy_uuid"]
-
-        applied = self.run("apply_candidate", {
-            "photo_uuid": copy_uuid,
-            "settings": settings,
-        })
-        round_no = len(self.store.get_session(session_id)["rounds"]) + 1
-        preview_name = f"round-{round_no:03d}.jpg"
-        final_path = self.store.preview_dir(session_id) / preview_name
-        exported = self.run("export_preview", {
-            "photo_uuid": copy_uuid,
-            "long_edge": self.presentation.get()["edit_render_max_edge"],
-        })
-        ref = exported.get("output_ref")
-        if not ref:
-            raise LrOpsError("导出未返回文件句柄；请重启 lr-ops 桥以加载新协议")
-        self.lrops.fetch_output(ref, final_path)
-        digest = hashlib.sha256(final_path.read_bytes()).hexdigest()
-
-        after_pending = bool(applied.get("after_pending"))
-        record = self.store.add_round(
-            session_id, settings, str(final_path),
-            before=applied.get("before"), after=applied.get("after"),
-            preview_sha256=digest, after_pending=after_pending,
-        )
-        if after_pending:
-            # 桥侧在回读预算内没等到写入生效：照实把不确定性透传给调用方，
-            # 并自动落一条 issue，不靠人手记录。
-            self.issues.record(
-                "after_pending",
-                f"apply_settings round {round_no}: 回读在预算内未确认写入生效",
-                tool="runtime.run_round", session_id=session_id,
-                detail={"settings_keys": sorted(settings.keys())})
-        return record
-
-    def xmp_view(self, session_id: str) -> dict:
-        session = self.store.get_session(session_id)
-        copy_uuid = session.get("working_copy_uuid")
-        if not copy_uuid:
-            return {"settings": {}, "xmp": settings_to_xmp({})}
-        state = self.run("get_develop_state", {"photo_uuid": copy_uuid})
-        settings = state.get("settings") or {}
-        return {"settings": settings, "xmp": settings_to_xmp(settings)}
-
-    def reset(self, session_id: str) -> dict:
-        session = self.store.get_session(session_id)
-        copy_uuid = session.get("working_copy_uuid")
-        if not copy_uuid:
-            raise StoreError("session has no working copy yet")
-        return self.run("reset_to_baseline", {"photo_uuid": copy_uuid})
 
     def report_issue(self, summary: str, kind: str = "manual",
-                     session_id: str | None = None,
+                     episode_id: str | None = None,
                      detail: dict | None = None) -> dict:
         if not summary or not str(summary).strip():
             raise StoreError("report_issue requires a non-empty summary")
-        return self.issues.record(kind, summary, session_id=session_id, detail=detail)
+        return self.issues.record(kind, summary, episode_id=episode_id, detail=detail)
 
-    def list_issues(self, kind: str | None = None, session_id: str | None = None,
+    def list_issues(self, kind: str | None = None, episode_id: str | None = None,
                     limit: int = 50) -> dict:
-        entries = self.issues.list(kind=kind, session_id=session_id, limit=limit)
+        entries = self.issues.list(kind=kind, episode_id=episode_id, limit=limit)
         return {"count": len(entries), "issues": entries}
 
     def upload_photo(self, filename: str, content: bytes) -> dict:
@@ -973,10 +863,15 @@ class Workbench:
             raise
         return {"stage_id": stage_id, "name": safe_name, "photo": imported.get("photo")}
 
+    def import_photos(self, paths, request_id, recursive=False, move=False, move_root=None):
+        from .photo_import import PhotoImport
+        return PhotoImport(self.store.root, self.catalog_client).import_photos(
+            paths, request_id, recursive=recursive, move=move, move_root=move_root)
+
 def build_workbench(seed_base: str | None = None, *,
-                    store: Store | None = None, manage_bridge: bool = False) -> Workbench:
+                    store: RuntimeState | None = None, manage_bridge: bool = False) -> Workbench:
     """Create the one protocol-neutral Runtime composition used by MCP."""
-    runtime_store = store if store is not None else Store()
+    runtime_store = store if store is not None else RuntimeState()
     registry = TargetRegistry(
         runtime_store.root / "config.json", seed_base=seed_base)
     if not manage_bridge:

@@ -11,7 +11,8 @@ sys.path.insert(0,str(WB));sys.path.insert(0,str(WB/'tests'))
 from test_studio import FakeLR
 from test_studio_ui_context import UiReportingLR, PARTIAL_UI
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
+from workbench.studio.engine import atomic
 from workbench_mcp.server import McpServer, TOOLS
 
 
@@ -19,7 +20,7 @@ class EpisodeProtocolTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.lr=FakeLR()
-        self.server=McpServer(Workbench(Store(Path(self.tmp.name)),self.lr))
+        self.server=McpServer(Workbench(RuntimeState(Path(self.tmp.name)),self.lr))
 
     def call(self,tool_name,**args):
         result=self.server.handle({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'trlr_'+tool_name,'arguments':args}})['result']
@@ -44,6 +45,78 @@ class EpisodeProtocolTests(unittest.TestCase):
         self.assertEqual(s['current_version'],0)
         self.assertEqual(len(self.data('list_episodes')),1)
 
+    def test_episode_label_create_update_clear_and_legacy_read(self):
+        state = self.data('create_episode', source_uuid='source', mode='source_edit',
+                          long_edge=256, label='Portrait 色彩')
+        sid = state['id']
+        self.assertEqual(state['label'], 'Portrait 色彩')
+        self.assertEqual(self.data('get_episode', episode_id=sid)['label'], 'Portrait 色彩')
+        self.assertEqual(self.data('list_episodes')[0]['label'], 'Portrait 色彩')
+        calls = len(self.lr.calls)
+        request_id, revision = str(uuid.uuid4()), state['revision']
+        updated = self.data('message_episode', episode_id=sid, base_revision=revision,
+                            request_id=request_id, label='Updated')
+        self.assertEqual(updated['label'], 'Updated')
+        self.assertEqual(updated['messages'], state['messages'])
+        repeated = self.data('message_episode', episode_id=sid, base_revision=revision,
+                             request_id=request_id, label='Updated')
+        self.assertEqual(repeated, updated)
+        cleared = self.data('message_episode', episode_id=sid, base_revision=updated['revision'],
+                            request_id=str(uuid.uuid4()), text='Clear label', label='')
+        self.assertEqual(cleared['label'], '')
+        self.assertEqual(cleared['messages'][-1]['text'], 'Clear label')
+        self.assertEqual(len(self.lr.calls), calls)
+        raw = self.server.wb.studio.raw(sid)
+        raw.pop('label')
+        path = self.server.wb.studio.directory(sid) / 'episode.json'
+        atomic(path, raw)
+        before = path.read_bytes()
+        self.assertEqual(self.data('get_episode', episode_id=sid)['label'], '')
+        self.assertEqual(self.data('list_episodes')[0]['label'], '')
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_label_schema_and_invalid_inputs_return_errors_before_changes(self):
+        tools = {tool['name']: tool for tool in TOOLS}
+        for name in ('create_episode', 'message_episode'):
+            field = tools['trlr_' + name]['inputSchema']['properties']['label']
+            self.assertEqual(field['type'], 'string')
+            self.assertEqual(field['maxLength'], 120)
+            self.assertNotIn('label', tools['trlr_' + name]['inputSchema']['required'])
+        for label in ('x' * 121, None, 1):
+            result = self.server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                        'params': {'name': 'trlr_create_episode', 'arguments': {
+                                            'source_uuid': 'source', 'mode': 'source_edit',
+                                            'label': label}}})['result']
+            self.assertTrue(result['isError'], result)
+        self.assertEqual(self.lr.calls, [])
+        state = self.data('create_episode', source_uuid='source', mode='source_edit',
+                          long_edge=256)
+        before = self.server.wb.studio.raw(state['id'])
+        for extra in ({'label': 'x' * 121}, {'label': None}, {'label': False}, {}):
+            result = self.server.handle({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                        'params': {'name': 'trlr_message_episode', 'arguments': {
+                                            'episode_id': state['id'], 'base_revision': state['revision'],
+                                            'request_id': str(uuid.uuid4()), **extra}}})['result']
+            self.assertTrue(result['isError'], result)
+        self.assertEqual(self.server.wb.studio.raw(state['id']), before)
+
+    def test_episode_diff_remains_available_during_exclusive_write_lock(self):
+        state = self.data('create_episode', source_uuid='source', mode='source_edit', long_edge=256)
+        sid = state['id']
+        before = self.server.wb.studio.raw(sid)
+        calls = len(self.lr.calls)
+        with self.server.wb.studio.lock(sid):
+            result = self.data('episode_diff', episode_id=sid, version_a=0, version_b=0)
+            self.assertEqual(result['observed_revision'], state['revision'])
+            self.assertEqual(result['revision'], result['observed_revision'])
+            self.assertEqual(result['submitted_settings_diff'],
+                             {'changed': {}, 'added': {}, 'removed': {}})
+        self.assertEqual(self.server.wb.studio.raw(sid), before)
+        self.assertEqual(len(self.lr.calls), calls)
+        tool = next(tool for tool in TOOLS if tool['name'] == 'trlr_episode_diff')
+        self.assertIn('observed_revision', tool['description'])
+        self.assertIn('revision at read time', tool['description'])
+
     def assert_snapshots(self, state, include):
         values = [state['source_snapshot'], state['baseline_snapshot']]
         values.extend(version['snapshot'] for version in state['versions'])
@@ -55,7 +128,7 @@ class EpisodeProtocolTests(unittest.TestCase):
                 self.assertEqual(set(value), {'omitted', 'sha256', 'keys'})
                 self.assertIs(value['omitted'], True)
 
-    def test_five_episode_entrypoints_support_compact_and_complete_evidence(self):
+    def test_episode_entrypoints_support_compact_and_complete_evidence(self):
         for include in (False, True):
             with self.subTest(include_snapshots=include):
                 # Omitting the flag exercises the MCP defaults, rather than
@@ -70,6 +143,7 @@ class EpisodeProtocolTests(unittest.TestCase):
                     ('edit_episode', {'settings': {'Exposure2012': .4}}),
                     ('verify_episode_xmp', {'version': 1}),
                     ('restore_episode', {'version': 0}),
+                    ('replay_episode', {'version': 1}),
                 ):
                     revision = state['revision']
                     request_id = str(uuid.uuid4())
@@ -90,12 +164,12 @@ class EpisodeProtocolTests(unittest.TestCase):
     def test_episode_snapshot_schema_points_to_episode_evidence(self):
         tools = {tool['name']: tool for tool in TOOLS}
         for name in ('create_episode', 'get_episode', 'edit_episode',
-                     'restore_episode', 'verify_episode_xmp'):
+                     'restore_episode', 'verify_episode_xmp', 'replay_episode'):
             field = tools['trlr_' + name]['inputSchema']['properties']['include_snapshots']
             self.assertIs(field['default'], False)
             self.assertIn('trlr_get_episode(include_snapshots=true)', field['description'])
             self.assertNotIn('trlr_get_full_settings', field['description'])
-        self.assertIn('Session compatibility only', tools['trlr_get_full_settings']['description'])
+        self.assertNotIn('trlr_get_full_settings', tools)
 
     def test_compact_mismatch_can_be_retrieved_in_full_without_replaying_edit(self):
         requested = [{'CorrectionAmount': 1, 'MaskingName': 'request' * 60}]
@@ -142,7 +216,7 @@ class EpisodeProtocolTests(unittest.TestCase):
 
     def test_ui_restore_warning_is_public_without_repeating_the_copy(self):
         self.lr = UiReportingLR(PARTIAL_UI)
-        self.server = McpServer(Workbench(Store(Path(self.tmp.name)), self.lr))
+        self.server = McpServer(Workbench(RuntimeState(Path(self.tmp.name)), self.lr))
         state = self.data('create_episode', source_uuid='source', mode='source_edit', long_edge=256)
         self.assertEqual(state['status'], 'ready')
         self.assertEqual(state['ui_context'], PARTIAL_UI)
@@ -153,7 +227,7 @@ class EpisodeProtocolTests(unittest.TestCase):
 
     def test_malformed_ui_report_does_not_turn_a_copy_into_tool_error(self):
         self.lr = UiReportingLR({'schema_version': 'lr-ui-context-v1', 'status': [], 'parts': {}})
-        self.server = McpServer(Workbench(Store(Path(self.tmp.name)), self.lr))
+        self.server = McpServer(Workbench(RuntimeState(Path(self.tmp.name)), self.lr))
         state = self.data('create_episode', source_uuid='source', mode='source_edit', long_edge=256)
         self.assertEqual(state['status'], 'ready')
         self.assertEqual(state['versions'][0]['photo_uuid'], 'copy1')

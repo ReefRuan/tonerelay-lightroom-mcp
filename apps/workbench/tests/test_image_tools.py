@@ -118,6 +118,72 @@ class ImageToolsTests(unittest.TestCase):
         same = self.tools.compare(a, a, mode='aligned')
         self.assertEqual(same['aligned_error']['mae_rgb'], 0)
 
+    def test_episode_version_shortcut_matches_saved_render_and_stays_read_only(self):
+        left = self.publish(Image.new('RGB', (80, 40), (20, 30, 40)))
+        right = self.publish(Image.new('RGB', (80, 40), (40, 50, 60)))
+        before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                  for p in self.directory.iterdir()}
+        shortcut_left = {'episode_version': {'episode_id': self.sid, 'version': 0}}
+        shortcut_right = {'episode_version': {'episode_id': self.sid, 'version': 1}}
+
+        expected = self.tools.compare(left, right, mode='aligned', max_edge=64)
+        actual = self.tools.compare(shortcut_left, shortcut_right,
+                                    mode='aligned', max_edge=64)
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(actual['left']['name'], 'v0.jpg')
+        self.assertEqual(actual['right']['name'], 'v1.jpg')
+        self.assertEqual(actual['aligned_error']['alignment'], 'caller_asserted_not_verified')
+        self.assertEqual(self.tools.compare(left, shortcut_right),
+                         self.tools.compare(left, right))
+        after = {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
+                 for p in self.directory.iterdir()}
+        self.assertEqual(before, after)
+
+    def test_episode_version_shortcut_keeps_geometry_and_mode_rules(self):
+        self.publish(Image.new('RGB', (10, 20), 'red'))
+        self.publish(Image.new('RGB', (20, 10), 'red'))
+        left = {'episode_version': {'episode_id': self.sid, 'version': 0}}
+        right = {'episode_version': {'episode_id': self.sid, 'version': 1}}
+        report = self.tools.compare(left, right)
+        self.assertEqual(report['mode'], 'distribution')
+        self.assertNotIn('aligned_error', report)
+        with self.assertRaisesRegex(ValueError, 'identical dimensions and crop'):
+            self.tools.compare(left, right, mode='aligned')
+
+    def test_episode_version_shortcut_rejects_bad_addresses_and_unpublished_versions(self):
+        ref = self.publish(Image.new('RGB', (8, 8)))
+        address = {'episode_id': self.sid, 'version': 0}
+        for source in (
+                {'episode_version': None},
+                {'episode_version': {}},
+                {'episode_version': {**address, 'path': '/tmp/secret'}},
+                {'episode_version': address, 'name': 'v0.jpg'},
+                {'episode_version': {**address, 'episode_id': '../escape'}},
+                *({'episode_version': {**address, 'version': value}}
+                  for value in (True, False, -1, 0.0, '0', None, 1)),
+        ):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                self.tools.compare(ref, source)
+        # The convenience form does not widen single-image measurement sources.
+        with self.assertRaises(ValueError):
+            self.tools.measure({'episode_version': address})
+
+    def test_episode_version_shortcut_retains_hash_and_symlink_checks(self):
+        ref = self.publish(Image.new('RGB', (8, 8)))
+        source = {'episode_version': {'episode_id': self.sid, 'version': 0}}
+        path = self.directory / ref['name']
+        content = path.read_bytes()
+        path.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            self.tools.compare(source, source)
+        path.write_bytes(content)
+        target = self.root / 'outside.jpg'
+        path.replace(target)
+        path.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.tools.compare(source, source)
+
     def test_loaded_image_compare_keeps_native_resolution_separate_from_measure(self):
         stripes = np.zeros((64, 128, 3), dtype=np.uint8)
         stripes[:, 1::2] = 255

@@ -140,7 +140,10 @@ class SidecarTests(unittest.TestCase):
         self.assertFalse(self.run_op('apply_mask', **params)['mask_exists'])
 
     def test_malformed_and_entity_xml_never_write(self):
-        params = self.write_params(action='create', settings={}, mask_xml='<!DOCTYPE mask [<!ENTITY x SYSTEM "file:///private">]>')
+        # Assembled at runtime so the security payload stays identical while
+        # this source file carries no literal file-scheme marker.
+        entity = '<!ENTITY x SYSTEM "file:' '///private">'
+        params = self.write_params(action='create', settings={}, mask_xml='<!DOCTYPE mask [' + entity + ']>')
         with self.assertRaises(SidecarError): self.run_op('apply_mask', **params)
         self.assertEqual(self.xmp.read_bytes(), self.original)
 

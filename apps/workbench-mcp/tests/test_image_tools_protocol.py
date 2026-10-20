@@ -23,7 +23,7 @@ from PIL import Image  # noqa: E402
 
 from workbench.runtime import Workbench  # noqa: E402
 from workbench.image_tools import ImageTools  # noqa: E402
-from workbench.store import Store  # noqa: E402
+from workbench.state import RuntimeState  # noqa: E402
 from workbench_mcp.server import McpServer  # noqa: E402
 
 CATALOG_IDENTITY = "catalog-md5-v1:0123456789abcdef0123456789abcdef"
@@ -95,7 +95,7 @@ class ImageToolsProtocolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name).resolve()
-        self.store = Store(self.base)
+        self.store = RuntimeState(self.base)
         self.episodes = self.base / "episodes"
         self.episodes.mkdir()
         self.episode_id = publish_episode(self.episodes)
@@ -135,18 +135,11 @@ class ImageToolsProtocolTests(unittest.TestCase):
         self.assertEqual(presentation["properties"]["codex_preview_max_edge"]["minimum"], 64)
         self.assertEqual(presentation["properties"]["edit_render_max_edge"]["minimum"], 256)
 
-        session_preview = tools["trlr_get_preview"]["inputSchema"]
-        self.assertEqual(session_preview["required"], ["session_id"])
-        self.assertEqual(session_preview["oneOf"],
-                         [{"required": ["round"]}, {"required": ["slot"]}])
-        self.assertIn("pattern", session_preview["properties"]["session_id"])
-        self.assertFalse(session_preview["additionalProperties"])
-
         measure = tools["trlr_image_measure"]["inputSchema"]
         self.assertEqual(measure["required"], ["source"])
         self.assertFalse(measure["additionalProperties"])
         source = measure["properties"]["source"]
-        self.assertEqual(len(source["oneOf"]), 5)
+        self.assertEqual(len(source["oneOf"]), 3)
         self.assertTrue(all(not variant["additionalProperties"]
                             for variant in source["oneOf"]))
         self.assertEqual(measure["properties"]["roi"]["minItems"], 4)
@@ -164,17 +157,24 @@ class ImageToolsProtocolTests(unittest.TestCase):
         compare = tools["trlr_image_compare"]["inputSchema"]
         self.assertEqual(set(compare["required"]), {"left", "right"})
         compare_source = compare["properties"]["left"]
-        self.assertEqual(len(compare_source["oneOf"]), 3)
+        self.assertEqual(len(compare_source["oneOf"]), 2)
         self.assertEqual(
             [set(variant["required"]) for variant in compare_source["oneOf"]],
-            [{"session_id", "round"}, {"session_id", "slot"},
-             {"episode_id", "name"}],
+            [{"episode_id", "name"}, {"episode_version"}],
         )
         self.assertTrue(all(not variant["additionalProperties"]
                             for variant in compare_source["oneOf"]))
         for variant in compare_source["oneOf"]:
-            id_key = "session_id" if "session_id" in variant["properties"] else "episode_id"
-            self.assertIn("pattern", variant["properties"][id_key])
+            if "episode_version" in variant["properties"]:
+                address = variant["properties"]["episode_version"]
+                self.assertEqual(set(address["required"]), {"episode_id", "version"})
+                self.assertFalse(address["additionalProperties"])
+                self.assertEqual(address["properties"]["version"],
+                                 {"type": "integer", "minimum": 0})
+            else:
+                address = variant
+            self.assertIn("pattern", address["properties"]["episode_id"])
+        self.assertIn("two versions of the same Episode", tools["trlr_image_compare"]["description"])
         self.assertEqual(compare["properties"]["right"], compare_source)
         self.assertEqual(compare["properties"]["mode"]["enum"], ["distribution", "aligned"])
         self.assertEqual(compare["properties"]["mode"]["default"], "distribution")
@@ -235,12 +235,12 @@ class ImageToolsProtocolTests(unittest.TestCase):
         testcase = self
 
         class ArtifactStudio:
-            def artifact(self, episode_id, name):
+            def artifact_payload(self, episode_id, name):
                 testcase.assertEqual(episode_id, "episode")
                 testcase.assertEqual(name, "v1.jpg")
-                return large
+                return large, large.read_bytes()
 
-            def get(self, episode_id):
+            def raw(self, episode_id):
                 testcase.assertEqual(episode_id, "episode")
                 return {"versions": [{}, {}]}
 
@@ -329,6 +329,65 @@ class ImageToolsProtocolTests(unittest.TestCase):
         self.assertEqual(metadata["comparison_basis"]["resampling"], "none")
         self.assertEqual(metadata["aligned_error"]["alignment"], "caller_asserted_not_verified")
         self.assertEqual(metadata["aligned_error"]["mae_rgb"], 0.0)
+
+    def test_episode_version_shortcuts_resolve_hash_verified_saved_renders(self):
+        left = {"episode_version": {"episode_id": self.episode_id, "version": 0}}
+        right = {"episode_version": {"episode_id": self.episode_id, "version": 1}}
+        for mode in ("distribution", "aligned"):
+            with self.subTest(mode=mode):
+                result = self.call("trlr_image_compare", {"left": left, "right": right,
+                                                           "mode": mode})
+                self.assertFalse(result["isError"])
+                actual = self.metadata(result)
+                expected = self.metadata(self.call("trlr_image_compare", {
+                    "left": {"episode_id": self.episode_id, "name": "v0.jpg"},
+                    "right": self.source, "mode": mode}))
+                self.assertEqual(actual, expected)
+                self.assertEqual(actual["left"]["name"], "v0.jpg")
+                self.assertEqual(actual["right"]["name"], "v1.jpg")
+                self.assertEqual(actual["right"]["sha256"],
+                                 digest(self.episodes / self.episode_id / "v1.jpg"))
+                self.assertNotIn(str(self.base), json.dumps(actual))
+                if mode == "aligned":
+                    self.assertEqual(actual["aligned_error"]["alignment"],
+                                     "caller_asserted_not_verified")
+                else:
+                    self.assertNotIn("aligned_error", actual)
+
+    def test_episode_version_shortcut_preserves_geometry_rejection(self):
+        directory = self.episodes / self.episode_id
+        Image.new("RGB", (24, 32), "red").save(directory / "v1.jpg")
+        state = json.loads((directory / "episode.json").read_text())
+        state["versions"][1]["sha256"] = digest(directory / "v1.jpg")
+        (directory / "episode.json").write_text(json.dumps(state))
+        arguments = {
+            "left": {"episode_version": {"episode_id": self.episode_id, "version": 0}},
+            "right": {"episode_version": {"episode_id": self.episode_id, "version": 1}},
+        }
+        self.assertFalse(self.call("trlr_image_compare", arguments)["isError"])
+        result = self.call("trlr_image_compare", {**arguments, "mode": "aligned"})
+        self.assertTrue(result["isError"])
+        self.assertIn("identical dimensions and crop", result["content"][0]["text"])
+
+    def test_episode_version_shortcut_rejects_bad_sources_and_tampered_render(self):
+        address = {"episode_id": self.episode_id, "version": 1}
+        for source in (
+                {"episode_version": None},
+                {"episode_version": {"version": 1}},
+                {"episode_version": {**address, "name": "v1.jpg"}},
+                {"episode_version": address, "photo_uuid": "catalog-photo"},
+                {"episode_version": {**address, "episode_id": "../escape"}},
+                *({"episode_version": {**address, "version": value}}
+                  for value in (True, -1, 1.0, "1", 9)),
+        ):
+            with self.subTest(source=source):
+                result = self.call("trlr_image_compare", {"left": self.source, "right": source})
+                self.assertTrue(result["isError"])
+        (self.episodes / self.episode_id / "v1.jpg").write_bytes(b"tampered")
+        result = self.call("trlr_image_compare", {
+            "left": {"episode_version": address}, "right": self.source})
+        self.assertTrue(result["isError"])
+        self.assertIn("hash mismatch", result["content"][0]["text"])
 
     def test_error_results_reject_nan_roi_and_unpublished_artifacts(self):
         source = self.source

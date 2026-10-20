@@ -14,6 +14,10 @@ paths, and serves the resulting bytes over HTTP to whoever asked. Callers now
 refer to work by *name* (a staging id or a job id), never by path, so they no
 longer need to share a disk with Lightroom.
 
+The explicit persistent local-file import is a separate exception: it supplies
+an absolute path plus byte count and SHA-256. Dispatch verifies those bytes on
+this host and refuses missing/mismatched files instead of guessing a mapping.
+
 Layout::
 
     <staging root>/<stage_id>/input/     files uploaded by the caller, to import
@@ -33,7 +37,10 @@ still hold) live in :func:`inject_dispatch` and :func:`collect_output`.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import stat
 import shutil
 import time
 import uuid
@@ -65,6 +72,33 @@ DEFAULT_MAX_AGE_SEC = 6 * 60 * 60
 
 class StagingError(RuntimeError):
     pass
+
+
+def persistent_import_path(value):
+    """Explicit shared-file exception: verify local bytes, never infer a path."""
+    if (not isinstance(value, dict) or set(value) != {"path", "bytes", "sha256"}
+            or not isinstance(value["path"], str) or "\x00" in value["path"] or not Path(value["path"]).is_absolute()
+            or type(value["bytes"]) is not int or value["bytes"] < 0
+            or not isinstance(value["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])):
+        raise StagingError("invalid persistent local_file descriptor")
+    path = Path(value["path"])
+    try:
+        if path.is_symlink():
+            raise StagingError("persistent import source must be a regular file")
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise StagingError("persistent import source must be a regular file")
+            digest, size = hashlib.sha256(), 0
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+                size += len(chunk)
+        if size != value["bytes"] or digest.hexdigest() != value["sha256"]:
+            raise StagingError("persistent import source bytes/SHA-256 mismatch")
+    except OSError as exc:
+        raise StagingError("persistent import source is unavailable on the Lightroom host") from exc
+    return str(path)
 
 
 def new_stage_id() -> str:
@@ -244,6 +278,11 @@ class Staging:
             # that lacks sidecar finalization/redaction support.
             resolved["_sidecar_protocol"] = 1
         if command in INPUT_HANDLES:
+            if command == "import_photo" and "local_file" in resolved:
+                if "stage_id" in resolved:
+                    raise StagingError("import_photo requires exactly one source")
+                resolved["path"] = persistent_import_path(resolved.pop("local_file"))
+                return resolved
             handle_key, param_key = INPUT_HANDLES[command]
             handle = resolved.pop(handle_key, None)
             if handle is None:

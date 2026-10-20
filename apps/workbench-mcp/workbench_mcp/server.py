@@ -32,27 +32,18 @@ if str(_LROPS_SERVICE) not in sys.path:
 from workbench.runtime import Workbench, build_workbench  # noqa: E402
 from workbench.folders import FolderError  # noqa: E402
 from workbench.artifacts import (  # noqa: E402
-    build_artifact_ref,
     build_artifact_ref_from_bytes,
 )
 from workbench.lrops import LrOpsError  # noqa: E402
-from workbench.store import StoreError  # noqa: E402
+from workbench.state import StoreError  # noqa: E402
 from workbench.targets import TargetError  # noqa: E402
 from workbench.configuration_help import CONFIG_TOPICS  # noqa: E402
 
-from workbench_mcp.session_tools import EXPORT_FORMATS, SessionTools  # noqa: E402
+from workbench_mcp.media_tools import EXPORT_FORMATS, MediaTools  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "tonerelay-lightroom-mcp", "version": __version__}
 RUNTIME_OPERATOR_INSTRUCTIONS = load_runtime_operator_prompt()
-
-PROTOCOL_SETTINGS_SCHEMA = {
-    "type": "object",
-    "description": "Lightroom develop settings, e.g. Exposure2012, Contrast2012, "
-                   "Highlights2012, Shadows2012, Whites2012, Blacks2012, "
-                   "Temperature, Tint, Vibrance, Saturation",
-    "additionalProperties": True,
-}
 
 PRESET_SELECTOR_SCHEMA = {
     "type": "object",
@@ -180,12 +171,12 @@ TOOLS = [
     },
     {
         "name": "trlr_get_presentation_config",
-        "description": "Read image presentation budgets from the presentation section of the shared config.json. codex_preview_max_edge caps every native image block returned to Codex; edit_render_max_edge caps later Session work renders and the render size captured by newly created Episodes. Neither setting changes Lightroom develop settings or final export output.",
+        "description": "Read image presentation budgets from the presentation section of the shared config.json. codex_preview_max_edge caps every native image block returned to Codex; edit_render_max_edge caps the render size captured by newly created Episodes. Neither setting changes Lightroom develop settings or final export output.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "trlr_set_presentation_config",
-        "description": "Persist one or both image presentation budgets. The Codex cap takes effect for later native-image responses. The edit-render cap affects later Session work renders and newly created Episodes; existing rendered artifacts are immutable. This tool does not change Lightroom develop settings or final exports.",
+        "description": "Persist one or both image presentation budgets. The Codex cap takes effect for later native-image responses. The edit-render cap affects newly created Episodes; existing rendered artifacts are immutable. This tool does not change Lightroom develop settings or final exports.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
@@ -246,18 +237,17 @@ TOOLS = [
     },
     {
         "name": "trlr_list_issues",
-        "description": "List recorded toolchain issues (tool errors, unsettled write "
-                       "readbacks, manual reports), newest first. Issues are recorded "
-                       "automatically when a tool raises or an apply_settings readback "
-                       "does not settle; use this instead of hand-written notes.",
+        "description": "List recorded toolchain issues and manual reports, newest first. "
+                       "Tool errors are recorded automatically when a tool raises. "
+                       "An optional episode_id filters explicitly attached context.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
                 "kind": {"type": "string",
-                         "description": "Filter by kind: tool_error | after_pending | manual."},
-                "session_id": {"type": "string",
-                               "description": "Filter to one session."},
+                         "description": "Filter by recorded kind, e.g. tool_error or manual."},
+                "episode_id": {"type": "string",
+                               "description": "Filter to one Episode."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500,
                           "default": 50},
             },
@@ -267,8 +257,8 @@ TOOLS = [
         "name": "trlr_report_issue",
         "description": "Manually record an issue or boundary observation into the "
                        "append-only issue log (e.g. 'bridge stopped polling after LR "
-                       "restart, needed plugin reload'). Automatic events (tool errors, "
-                       "unsettled readbacks) are already recorded without this tool.",
+                       "restart'). Tool errors are recorded automatically; observations "
+                       "and explicit manual reports remain in the append-only log.",
         "inputSchema": {
             "type": "object",
             "required": ["summary"],
@@ -276,7 +266,7 @@ TOOLS = [
             "properties": {
                 "summary": {"type": "string", "minLength": 1, "maxLength": 500},
                 "kind": {"type": "string", "default": "manual"},
-                "session_id": {"type": "string"},
+                "episode_id": {"type": "string"},
                 "detail": {"type": "object"},
             },
         },
@@ -342,89 +332,23 @@ TOOLS = [
         },
     },
     {
-        "name": "trlr_create_session",
-        "description": "Legacy compatibility only. Create a Session binding source and "
-                       "reference photos, render both previews and capture a baseline. "
-                       "color_match and style_match are caller-supplied relationship labels; "
-                       "they do not trigger matching, parameter advice or aesthetic choices. "
-                       "Use trlr_create_episode for new work.",
+        "name": "trlr_import_photos",
+        "description": "Import explicit MCP Server-local image files or directories as master records into the authorized Catalog. Directories include immediate files by default; recursive=true includes descendants. Unsupported extensions and symlinks are skipped, with per-file UUID, byte count, SHA-256, EXIF capture_time (or unknown), actual path and errors. Files remain in place by default. move=true requires move_root and organizes verified copies into YYYY/YYYY-MM-DD/original-name (unknown-date when EXIF is absent), renaming collisions with -2 etc.; source deletion happens only after verified copy and successful import. Failures retain the source. The Bridge/Lightroom host must see the same persistent paths and bytes; no temporary-staging fallback. This is a Catalog write in safe and full modes. A unique request_id durably deduplicates the entire batch; changed input or Catalog/Target is rejected, uncertain writes are never replayed.",
         "inputSchema": {
-            "type": "object",
-            "required": ["source_uuid", "reference_uuid"],
+            "type": "object", "additionalProperties": False,
+            "required": ["paths", "request_id"],
             "properties": {
-                "source_uuid": {"type": "string"},
-                "reference_uuid": {"type": "string"},
-                "mode": {"type": "string", "enum": ["color_match", "style_match"],
-                         "default": "color_match"},
+                "paths": {"type": "array", "minItems": 1,
+                          "items": {"type": "string", "minLength": 1},
+                          "description": "Explicit file or directory paths readable on the MCP Server host."},
+                "recursive": {"type": "boolean", "default": False},
+                "move": {"type": "boolean", "default": False},
+                "move_root": {"type": ["string", "null"], "minLength": 1, "default": None},
+                "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
             },
         },
-    },
-    {
-        "name": "trlr_get_session",
-        "description": "Get session state including all rounds (settings used, "
-                       "preview hashes and before/after values). Server-local preview paths "
-                       "are not exposed; use trlr_get_preview to read image bytes.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "properties": {"session_id": {"type": "string"}},
-        },
-    },
-    {
-        "name": "trlr_apply_settings",
-        "description": "Apply develop settings to the session's working copy in "
-                       "Lightroom, render a real preview and store it as a new round. "
-                       "Returns the round record; call trlr_get_preview to view it.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id", "settings"],
-            "properties": {
-                "session_id": {"type": "string"},
-                "settings": PROTOCOL_SETTINGS_SCHEMA,
-            },
-        },
-    },
-    {
-        "name": "trlr_get_preview",
-        "description": "Get one already-persisted session JPEG without calling Lightroom. "
-                       "Pass exactly one of round (an edited result) or slot (source/reference). "
-                       "Current previews are checked against their persisted SHA-256; legacy "
-                       "records without a hash are returned as unverified, and mismatches fail.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "additionalProperties": False,
-            "oneOf": [{"required": ["round"]}, {"required": ["slot"]}],
-            "properties": {
-                "session_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
-                "round": {"type": "integer", "minimum": 1},
-                "slot": {"type": "string", "enum": ["source", "reference"]},
-                "max_edge": {"type": "integer", "minimum": 64, "maximum": 2048,
-                             "default": 1024,
-                             "description": "downscale longest edge for the returned image"},
-            },
-        },
-    },
-    {
-        "name": "trlr_get_xmp",
-        "description": "Current develop settings of the session's working copy, "
-                       "as JSON and as XMP preset text. Covers the basic exposure group only, "
-                       "not every field Lightroom reports: for a complete readback (curves, HSL, "
-                       "grain, split toning, color grading, vignette, ...) use trlr_get_full_settings.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "properties": {"session_id": {"type": "string"}},
-        },
-    },
-    {
-        "name": "trlr_reset",
-        "description": "Reset the session's working copy back to the captured baseline.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "properties": {"session_id": {"type": "string"}},
-        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": True,
+                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "trlr_upload_photo",
@@ -474,12 +398,15 @@ TOOLS = [
 
 # Episode tools share a persistent, versioned Runtime engine. The AI client
 # owns decisions; the engine owns state, rendering, readback and artifacts.
-def episode_tool(name, description, properties, required):
+def episode_tool(name, description, properties, required, **constraints):
     return {"name": "trlr_" + name, "description": description,
             "inputSchema": {"type": "object", "properties": properties,
-                            "required": required, "additionalProperties": False}}
+                            "required": required, "additionalProperties": False,
+                            **constraints}}
 
 SID = {"episode_id": {"type": "string"}}
+LABEL = {"label": {"type": "string", "maxLength": 120,
+                   "description": "Optional Episode label, at most 120 characters. Empty string clears it."}}
 SNAPSHOTS = {"include_snapshots": {"type": "boolean", "default": False,
                                    "description": "Include full stored develop snapshots (source/baseline and per-version) and readback mismatch values. Default false uses hashed stand-ins for snapshots and bulky mismatch values. Retrieve full stored evidence with trlr_get_episode(include_snapshots=true); historical mismatch summaries cannot be expanded."}}
 WRITE = {**SID, "base_revision": {"type": "integer"}, "request_id": {"type": "string", "description": "Fresh UUID per logical action. Reuse only to retry that same action."}}
@@ -491,31 +418,40 @@ TOOLS.extend([
     episode_tool("list_parameter_variant_results", "List factual Lightroom parameter-variant render records. Each record is tied to one source baseline and render environment. The Runtime does not rank, recommend, summarize or generalize these records.",
                  {"query": {"type": "string", "description": "Optional AND search over parameter and source identifiers."}}, []),
     episode_tool("create_episode", "Create an editing context from a master photo or one of its virtual copies; when the source is a virtual copy, its current develop state becomes the baseline (a virtual copy of the source is still created for rendering, so the source itself is never modified). The Episode creates its own independent virtual copies for the baseline and each edit version. The default same_capture_match mode requires reference_uuid and same_capture=true, explicitly established by the user; image dimensions do not establish alignment. mode=source_edit is the source-only execution mode: it accepts direct parameter edits and parameter-variant renders, but supplies no recipes or aesthetic choices.",
-                 {"source_uuid": {"type": "string"}, "reference_uuid": {"type": "string"}, "same_capture": {"type": "boolean"}, "mode": {"type": "string", "enum": ["same_capture_match", "source_edit"], "default": "same_capture_match"}, "intent": {"type": "string"}, "long_edge": {"type": "integer", "minimum": 256, "maximum": 2048}, **SNAPSHOTS}, ["source_uuid"]),
+                 {"source_uuid": {"type": "string"}, "reference_uuid": {"type": "string"}, "same_capture": {"type": "boolean"}, "mode": {"type": "string", "enum": ["same_capture_match", "source_edit"], "default": "same_capture_match"}, "intent": {"type": "string"}, "long_edge": {"type": "integer", "minimum": 256, "maximum": 2048}, **LABEL, **SNAPSHOTS}, ["source_uuid"]),
     episode_tool("render_parameter_variants", "Asynchronously render 1 to 5 absolute values for one parameter on an Episode. Every render starts from the same fixed current version captured when the operation begins. Poll trlr_get_episode for completion, then inspect images or call trlr_image_measure/trlr_image_compare on demand. This tool records render, readback and provenance facts only; it computes no image-response score and never recommends or selects a result. Curves use arrays as candidate values.",
                  {**WRITE, "parameter": {"type": "string"},
                   "values": {"type": "array", "minItems": 1, "maxItems": 5,
                               "items": {"oneOf": [{"type": "number"},
                                                     {"type": "array", "items": {"type": "integer"}}]}}},
                  [*WRITE, "parameter", "values"]),
-    episode_tool("list_episodes", "List editing contexts, most recently touched first, with their bound photo, version summaries and a truncated last user message. Empty drafts are hidden unless include_empty=true. The summary has no message timestamp or pending marker: shortlist here, then call trlr_get_episode before deciding whether work is outstanding.", {"include_empty": {"type": "boolean", "default": False}}, []),
-    episode_tool("get_episode", "Read revision, user requests, immutable versions, artifact references, readbacks and errors before editing. Image measurement and comparison are separate, explicit operations through trlr_image_measure and trlr_image_compare.", {**SID, **SNAPSHOTS}, ["episode_id"]),
+    episode_tool("list_episodes", "List editing contexts, most recently touched first, with their label, bound photo, version summaries and a truncated last user message. Historical Episodes without a label return an empty string. Empty drafts are hidden unless include_empty=true. The summary has no message timestamp or pending marker: shortlist here, then call trlr_get_episode before deciding whether work is outstanding.", {"include_empty": {"type": "boolean", "default": False}}, []),
+    episode_tool("get_episode", "Read label, revision, user requests, immutable versions, artifact references, readbacks and errors before editing. Historical Episodes without a label return an empty string. Image measurement and comparison are separate, explicit operations through trlr_image_measure and trlr_image_compare.", {**SID, **SNAPSHOTS}, ["episode_id"]),
     episode_tool("edit_episode", "Apply a develop patch to the current context, render it in Lightroom and record a new version. settings accepts any crs: develop field, not just a fixed list: numbers, booleans, numeric arrays (curves/mixers) and nested tables (masks/retouch). Known fields are range-checked; everything else is passed through and Lightroom decides the range. Read the returned version's readback_mismatches to see which keys Lightroom clamped or ignored -- that is the real boundary, reported instead of hidden.",
                  {**WRITE, "settings": {"type": "object"}, "note": {"type": "string"}, **SNAPSHOTS}, [*WRITE, "settings"]),
     episode_tool("stop_episode", "Request stopping after the current Lightroom render finishes. Completed immutable versions are retained without selecting a preferred result.", SID, list(SID)),
     episode_tool("restore_episode", "Select a saved immutable version in LR and make it current. Does not change the original master.",
                  {**WRITE, "version": {"type": "integer", "minimum": 0}, **SNAPSHOTS}, [*WRITE, "version"]),
-    episode_tool("message_episode", "Persist user editing instructions or an assistant explanation. Saving text does not execute edits; use explicit execution tools and report only observed results.",
-                 {**WRITE, "text": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant"]}}, [*WRITE, "text"]),
+    episode_tool("message_episode", "Persist user editing instructions, an assistant explanation, or an Episode label. Supply text, label, or both; label-only updates do not append a message. Saving metadata does not execute edits; use explicit execution tools and report only observed results.",
+                 {**WRITE, **LABEL, "text": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant"]}}, [*WRITE],
+                 anyOf=[{"required": ["text"]}, {"required": ["label"]}]),
     episode_tool("verify_episode_xmp", "Serialize a version patch to XMP, parse its parameters, apply via LR SDK to a fresh inherited-baseline copy and compare real renders. Does NOT verify Lightroom's native preset-file importer or other photographs.",
                  {**WRITE, "version": {"type": "integer", "minimum": 0}, **SNAPSHOTS}, [*WRITE, "version"]),
     episode_tool("episode_artifact", "Read a published version image, reference, verified XMP or verification report. names: reference.jpg, v0.jpg, v1.xmp, verification1.json. Optional normalized crop [x,y,width,height] for image inspection only; does not edit LR geometry.",
                  {**SID, "name": {"type": "string"}, "max_edge": {"type": "integer", "minimum": 64, "maximum": 2048}, "crop": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4}}, [*SID, "name"]),
 ])
 
+TOOLS.extend([
+    episode_tool("get_photo_settings", "Read the live full Develop settings of one explicit Catalog photo on a pinned, identity-bound connection. Two matching SDK snapshots provide current settings readback evidence; differing snapshots fail. Returns settings JSON and/or a serialized XMP representation with skipped fields reported. This is not an Episode version snapshot, rendered-image verification, color validation or native preset-import verification.",
+                 {"photo_uuid": {"type": "string", "minLength": 1}, "format": {"type": "string", "enum": ["json", "xmp", "both"], "default": "both"}}, ["photo_uuid"]),
+    episode_tool("episode_diff", "Compare two saved immutable Episode versions without Lightroom. Nonblocking even during a concurrent Episode write; reads one atomic persisted snapshot. observed_revision is the revision at read time and may differ from the latest revision after a concurrent write. Returns submitted-settings differences, full stored readback differences when available and each version's readback mismatches; no image score or preferred version.",
+                 {**SID, "version_a": {"type": "integer", "minimum": 0}, "version_b": {"type": "integer", "minimum": 0}}, ["episode_id", "version_a", "version_b"]),
+    episode_tool("replay_episode", "Replay one saved Episode version's submitted parameter state on a fresh virtual copy of the Episode baseline and publish a new immutable version. Requires current revision and unique request_id; preserves the source and all existing versions. Returns real settings readback and render evidence, including mismatches. This re-executes saved parameters; it does not restore arbitrary external edits or guarantee identical render bytes.",
+                 {**WRITE, "version": {"type": "integer", "minimum": 0}, "note": {"type": "string"}, **SNAPSHOTS}, [*WRITE, "version"]),
+])
+
 # Shared read-only image comparison. Unlike measurement's broad source support,
-# comparison only accepts already-persisted server renders: session previews or
-# hash-verified Episode artifacts. It never refreshes a catalog thumbnail or
+# comparison only accepts hash-verified published Episode artifacts. It never refreshes a catalog thumbnail or
 # renders/imports a folder source as a side effect.
 EPISODE_IMAGE_SOURCE_SCHEMA = {
     "type": "object",
@@ -529,34 +465,30 @@ EPISODE_IMAGE_SOURCE_SCHEMA = {
                  "description": "Published render: reference.jpg or vN.jpg."},
     },
 }
-SESSION_ROUND_IMAGE_SOURCE_SCHEMA = {
-    "type": "object",
-    "description": "One stored session round preview.",
-    "required": ["session_id", "round"],
-    "additionalProperties": False,
-    "properties": {
-        "session_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN,
-                       "description": "Canonical lowercase session UUID."},
-        "round": {"type": "integer", "minimum": 1},
-    },
-}
-SESSION_SLOT_IMAGE_SOURCE_SCHEMA = {
-    "type": "object",
-    "description": "One stored session source or reference preview.",
-    "required": ["session_id", "slot"],
-    "additionalProperties": False,
-    "properties": {
-        "session_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN,
-                       "description": "Canonical lowercase session UUID."},
-        "slot": {"type": "string", "enum": ["source", "reference"]},
-    },
-}
 IMAGE_COMPARE_SOURCE_SCHEMA = {
     "description": "A persisted server render; fast catalog and folder sources are excluded.",
     "oneOf": [
-        SESSION_ROUND_IMAGE_SOURCE_SCHEMA,
-        SESSION_SLOT_IMAGE_SOURCE_SCHEMA,
         EPISODE_IMAGE_SOURCE_SCHEMA,
+    ],
+}
+IMAGE_VERSION_COMPARE_SOURCE_SCHEMA = {
+    "description": "A hash-verified persisted Episode render. episode_version is a shortcut only for comparing two versions of the same Episode; it does not establish capture or alignment.",
+    "oneOf": [
+        EPISODE_IMAGE_SOURCE_SCHEMA,
+        {
+            "type": "object", "required": ["episode_version"],
+            "additionalProperties": False,
+            "properties": {
+                "episode_version": {
+                    "type": "object", "required": ["episode_id", "version"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "episode_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
+                        "version": {"type": "integer", "minimum": 0},
+                    },
+                },
+            },
+        },
     ],
 }
 IMAGE_ROI_SCHEMA = {
@@ -614,14 +546,14 @@ TOOLS.extend([
     },
     {
         "name": "trlr_image_compare",
-        "description": "Compare two persisted renders at their decoded native resolution. Each side is a stored session source/reference/round preview or a hash-verified Episode render; fast catalog thumbnails and folder files are excluded. distribution mode returns independent factual measurements and a right-minus-left scalar subset; histogram arrays remain per-image pixel counts, not a normalized distance. aligned mode additionally reports 0..255 encoded-sRGB 8-bit channel error and must only be used when the caller has asserted identical capture and alignment (the tool does not verify it). Returns metadata JSON plus a native JPEG preview image; it does not choose a side or make an aesthetic judgment. Unlike trlr_image_measure, comparison does not downscale before calculating metrics.",
+        "description": "Compare two persisted renders at their decoded native resolution. Each side is a hash-verified published Episode render; fast catalog thumbnails and folder files are excluded. The episode_version shortcut is only for two versions of the same Episode and resolves to the saved vN.jpg render; it does not establish alignment. distribution mode returns independent factual measurements and a right-minus-left scalar subset; histogram arrays remain per-image pixel counts, not a normalized distance. aligned mode additionally reports 0..255 encoded-sRGB 8-bit channel error and must only be used when the caller has asserted identical capture and alignment (the tool does not verify it). Returns metadata JSON plus a native JPEG preview image; it does not choose a side or make an aesthetic judgment. Unlike trlr_image_measure, comparison does not downscale before calculating metrics.",
         "inputSchema": {
             "type": "object",
             "required": ["left", "right"],
             "additionalProperties": False,
             "properties": {
-                "left": IMAGE_COMPARE_SOURCE_SCHEMA,
-                "right": IMAGE_COMPARE_SOURCE_SCHEMA,
+                "left": IMAGE_VERSION_COMPARE_SOURCE_SCHEMA,
+                "right": IMAGE_VERSION_COMPARE_SOURCE_SCHEMA,
                 "mode": {"type": "string", "enum": ["distribution", "aligned"], "default": "distribution",
                          "description": "aligned = caller-asserted same capture/alignment; no automatic stretching."},
                 "roi": IMAGE_ROI_SCHEMA,
@@ -706,8 +638,8 @@ TOOLS.extend([
 ])
 
 
-# ---- Session and image capabilities -------------------------------------------
-# Business logic lives in workbench_mcp.session_tools. Measurement accepts one
+# ---- Independent image capabilities -------------------------------------------
+# Business logic lives in workbench_mcp.media_tools. Measurement accepts one
 # explicit source shape; branches are strict so mixed addressing cannot silently
 # select the wrong image.
 
@@ -718,22 +650,6 @@ IMAGE_MEASURE_SOURCE_SCHEMA = {
             "type": "object", "required": ["photo_uuid"],
             "additionalProperties": False,
             "properties": {"photo_uuid": {"type": "string", "minLength": 1}},
-        },
-        {
-            "type": "object", "required": ["session_id", "round"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
-                "round": {"type": "integer", "minimum": 1},
-            },
-        },
-        {
-            "type": "object", "required": ["session_id", "slot"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string", "pattern": CANONICAL_UUID_PATTERN},
-                "slot": {"type": "string", "enum": ["source", "reference"]},
-            },
         },
         {
             "type": "object", "required": ["root", "name"],
@@ -761,8 +677,7 @@ TOOLS.extend([
     {
         "name": "trlr_export_image",
         "description": "JPEG export through Lightroom's render pipeline. Server-side render of a catalog photo "
-                       "(photo_uuid) or a session (session_id; with round = reuse that round's "
-                       "stored verified preview, without = live-render the working copy). "
+                       "(photo_uuid). "
                        "Defaults to FULL resolution (no downscale); pass max_edge only when the "
                        "user asks for a sized copy. Oversized-source export failures automatically "
                        "retry at smaller edges and the response records the actual edge. Returns "
@@ -773,11 +688,9 @@ TOOLS.extend([
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
+            "required": ["photo_uuid"],
             "properties": {
                 "photo_uuid": {"type": "string", "minLength": 1},
-                "session_id": {"type": "string", "minLength": 1},
-                "round": {"type": "integer", "minimum": 1,
-                          "description": "Reuse the stored preview of this round (no LR call)."},
                 "max_edge": {"type": ["integer", "null"], "minimum": 64, "maximum": 16384,
                              "description": "Optional downscale cap in pixels. Omit (or null) for "
                                            "full resolution; pass a value only for a sized copy."},
@@ -789,7 +702,7 @@ TOOLS.extend([
     },
     {
         "name": "trlr_image_measure",
-        "description": "Convert one image into a bounded numeric representation after downscaling to analysis_edge: RGB and relative-luminance distributions, saturation/hue, tonal-band statistics, clipping, optional point samples and optional 8x8 luma grid. Source is exactly one of catalog photo, session round/slot, an allowed folder file or published episode render. Returns measurements and provenance only; the image stays server-side and no recommendation, comparison or aesthetic judgment is produced. Future semantic measurements can extend this representation without changing compare's native pairwise role.",
+        "description": "Convert one image into a bounded numeric representation after downscaling to analysis_edge: RGB and relative-luminance distributions, saturation/hue, tonal-band statistics, clipping, optional point samples and optional 8x8 luma grid. Source is exactly one of catalog photo, an allowed folder file or published episode render. Returns measurements and provenance only; the image stays server-side and no recommendation, comparison or aesthetic judgment is produced. Future semantic measurements can extend this representation without changing compare's native pairwise role.",
         "inputSchema": {
             "type": "object",
             "required": ["source"],
@@ -847,82 +760,6 @@ TOOLS.extend([
                                        "description": "review includes alternate tiles and rough-box diagnostics."},
                         }},
     },
-    {
-        "name": "trlr_get_full_settings",
-        "description": "Full develop snapshot of the session working copy: every field "
-                       "Lightroom reports (curves, HSL, grain, calibration, ...) as structured "
-                       "JSON, plus a standard XMP preset text assembled server-side. Nested "
-                       "tables (masks) cannot be XMP attributes and are listed under "
-                       "skipped_structured_keys instead of being dropped silently. "
-                       "Session compatibility only: Episode snapshots use "
-                       "trlr_get_episode(include_snapshots=true).",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string"},
-                "format": {"type": "string", "enum": ["json", "xmp", "both"], "default": "both"},
-            },
-        },
-    },
-    {
-        "name": "trlr_round_diff",
-        "description": "Diff two rounds of a session: submitted-settings diff, after-readback "
-                       "diff when available, and image-measurement delta (reuses the same internal "
-                       "measurement schema as trlr_image_measure).",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id", "round_a", "round_b"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string"},
-                "round_a": {"type": "integer", "minimum": 1},
-                "round_b": {"type": "integer", "minimum": 1},
-                "stats": {"type": "boolean", "default": True},
-            },
-        },
-    },
-    {
-        "name": "trlr_replay_round",
-        "description": "Full replay: reset the working copy to baseline, then apply one "
-                       "complete target settings set in a single shot and store a new round. "
-                       "Target is either explicit settings, or source_round (prefers that round's "
-                       "after-readback full state, falls back to merged submitted settings) plus "
-                       "an optional patch. WB is auto-filled like trlr_apply_settings.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string"},
-                "settings": PROTOCOL_SETTINGS_SCHEMA,
-                "source_round": {"type": "integer", "minimum": 1},
-                "patch": PROTOCOL_SETTINGS_SCHEMA,
-            },
-        },
-    },
-    {
-        "name": "trlr_export_session_context",
-        "description": "Write a legacy Session context.md skeleton: session_id, "
-                       "working-copy uuid, round timeline with per-round settings diff, final "
-                       "settings and artifact sha256 list. The three narrative sections "
-                       "(思路/翻车记录/修复与结论) are left blank for the caller to fill.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["session_id", "output_dir"],
-            "additionalProperties": False,
-            "properties": {
-                "session_id": {"type": "string"},
-                "output_dir": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Absolute archive-directory path on the MCP Server host.",
-                },
-                "overwrite": {"type": "boolean", "default": False},
-            },
-        },
-    },
 ])
 
 
@@ -932,16 +769,6 @@ def _text(text: str) -> dict:
 
 def _json_content(data) -> dict:
     return {"content": [_text(json.dumps(data, ensure_ascii=False, indent=2))]}
-
-
-def _public_session_data(value):
-    """Remove internal persistence paths from legacy Session responses."""
-    if isinstance(value, dict):
-        return {key: _public_session_data(item) for key, item in value.items()
-                if key != "preview_path"}
-    if isinstance(value, list):
-        return [_public_session_data(item) for item in value]
-    return value
 
 
 def _summarize_args(args: dict | None) -> dict:
@@ -1001,9 +828,6 @@ def _image_content_bytes(content: bytes, max_edge: int, extra: dict | None = Non
     return {"content": blocks}
 
 
-_MISSING = object()
-
-
 def _json_integer(value, name: str, minimum: int, maximum: int | None = None) -> int:
     """Normalize numbers JSON Schema considers integers; reject bool/non-finite values."""
     if type(value) is int:
@@ -1019,26 +843,17 @@ def _json_integer(value, name: str, minimum: int, maximum: int | None = None) ->
     return normalized
 
 
-def _normalize_compare_source(source):
-    """Copy and normalize a session round without mutating caller-owned input."""
-    if not isinstance(source, dict) or "round" not in source:
-        return source
-    normalized = dict(source)
-    normalized["round"] = _json_integer(source["round"], "round", 1)
-    return normalized
-
-
 class McpServer:
     def __init__(self, wb: Workbench):
         self.wb = wb
-        self._session_tools = None
+        self._media_tools = None
 
     @property
-    def session_tools(self) -> SessionTools:
-        """Session execution and measurement layer, loaded without import side effects."""
-        if self._session_tools is None:
-            self._session_tools = SessionTools(self.wb)
-        return self._session_tools
+    def media_tools(self) -> MediaTools:
+        """Independent export and measurement layer, loaded without import side effects."""
+        if self._media_tools is None:
+            self._media_tools = MediaTools(self.wb)
+        return self._media_tools
 
     # ---- tool implementations -------------------------------------------------
 
@@ -1069,16 +884,16 @@ class McpServer:
             raise
 
     def _tool_trlr_list_issues(self, kind: str | None = None,
-                               session_id: str | None = None,
+                               episode_id: str | None = None,
                                limit: int = 50) -> dict:
-        return _json_content(self.wb.list_issues(kind=kind, session_id=session_id,
+        return _json_content(self.wb.list_issues(kind=kind, episode_id=episode_id,
                                                  limit=limit))
 
     def _tool_trlr_report_issue(self, summary: str, kind: str = "manual",
-                                session_id: str | None = None,
+                                episode_id: str | None = None,
                                 detail: dict | None = None) -> dict:
         return _json_content(self.wb.report_issue(
-            summary, kind=kind, session_id=session_id, detail=detail))
+            summary, kind=kind, episode_id=episode_id, detail=detail))
 
     def _tool_trlr_health(self) -> dict:
         return _json_content(self.wb.health())
@@ -1230,39 +1045,37 @@ class McpServer:
         metadata = {k: v for k, v in record.items() if k != "preview_path"}
         return _image_content(path, max_edge, metadata)
 
-    def _tool_trlr_create_session(self, source_uuid: str, reference_uuid: str,
-                                  mode: str = "color_match") -> dict:
-        return _json_content(_public_session_data(
-            self.wb.create_session(source_uuid, reference_uuid, mode)))
 
-    def _tool_trlr_get_session(self, session_id: str) -> dict:
-        return _json_content(_public_session_data(
-            self.wb.store.get_session(session_id)))
+    def _tool_trlr_get_photo_settings(self, photo_uuid, format="both"):
+        return _json_content(self.wb.studio.photo_settings(photo_uuid, format=format))
 
-    def _tool_trlr_apply_settings(self, session_id: str, settings: dict) -> dict:
-        # 缺省时显式补齐 WB（以当前回读值为基准）并回显实际写入值。
-        return _json_content(_public_session_data(
-            self.session_tools.apply_settings(session_id, settings)))
+    def _tool_trlr_episode_diff(self, episode_id, version_a, version_b):
+        version_a = _json_integer(version_a, "version_a", 0)
+        version_b = _json_integer(version_b, "version_b", 0)
+        return _json_content(self.wb.studio.version_diff(episode_id, version_a, version_b))
+
+    def _tool_trlr_replay_episode(self, episode_id, version, **args):
+        version = _json_integer(version, "version", 0)
+        args.setdefault("include_snapshots", False)
+        return _json_content(self.wb.studio.action(episode_id, "replay", version=version, **args))
 
     def _tool_trlr_export_image(self, **args) -> dict:
-        return _json_content(self.session_tools.export_image(**args))
+        return _json_content(self.media_tools.export_image(**args))
 
     def _tool_trlr_image_measure(self, **args) -> dict:
-        return _json_content(self.session_tools.image_measure(**args))
+        return _json_content(self.media_tools.image_measure(**args))
 
     def _tool_trlr_color_patch_measure(self, **args) -> dict:
-        return _json_content(self.session_tools.color_patch_measure(**args))
+        return _json_content(self.media_tools.color_patch_measure(**args))
 
     def _tool_trlr_digital_color_references(self, **args) -> dict:
-        return _json_content(self.session_tools.digital_color_references(**args))
+        return _json_content(self.media_tools.digital_color_references(**args))
 
     def _tool_trlr_color_region_compare(self, **args) -> dict:
         detail = args.pop("detail", "compact")
         if detail not in ("compact", "review"):
             raise ValueError("detail must be compact or review")
-        args["baseline"] = _normalize_compare_source(args["baseline"])
-        args["candidate"] = _normalize_compare_source(args["candidate"])
-        result = self.session_tools.color_region_compare(**args)
+        result = self.media_tools.color_region_compare(**args)
         overlay = result.pop("overlay_jpeg", None)
         if detail == "compact" and overlay is None:
             for region in result["regions"]:
@@ -1281,10 +1094,8 @@ class McpServer:
 
     def _tool_trlr_image_compare(self, left, right, mode='distribution', roi=None,
                                  max_edge=512):
-        left = _normalize_compare_source(left)
-        right = _normalize_compare_source(right)
         max_edge = self._codex_preview_edge(max_edge, 1024)
-        result = self.session_tools.image_compare(
+        result = self.media_tools.image_compare(
             left=left, right=right, mode=mode, roi=roi, max_edge=max_edge)
         preview = result["preview"]
         # ``compare_images`` makes a side-by-side board, whose width can be
@@ -1302,74 +1113,16 @@ class McpServer:
              "mimeType": "image/jpeg"},
         ]}
 
-    def _tool_trlr_get_full_settings(self, session_id: str, format: str = "both") -> dict:
-        return _json_content(self.session_tools.full_settings(session_id, format=format))
-
-    def _tool_trlr_round_diff(self, session_id: str, round_a: int, round_b: int,
-                              stats: bool = True) -> dict:
-        return _json_content(self.session_tools.round_diff(
-            session_id, round_a, round_b, stats=stats))
-
-    def _tool_trlr_replay_round(self, session_id: str, settings=None, source_round=None,
-                                patch=None) -> dict:
-        return _json_content(_public_session_data(
-            self.session_tools.replay_round(
-                session_id, settings=settings, source_round=source_round, patch=patch)))
-
-    def _tool_trlr_export_session_context(self, session_id: str, output_dir: str,
-                                          overwrite: bool = False) -> dict:
-        return _json_content(self.session_tools.export_session_context(
-            session_id, output_dir, overwrite=overwrite))
-
-    def _tool_trlr_get_preview(self, session_id: str, round=_MISSING,
-                               slot=_MISSING, max_edge=1024) -> dict:
-        max_edge = self._codex_preview_edge(max_edge)
-        has_round = round is not _MISSING
-        has_slot = slot is not _MISSING
-        if has_round == has_slot:
-            raise StoreError("pass exactly one of round or slot")
-        if has_round:
-            round = _json_integer(round, "round", 1)
-            source = {"session_id": session_id, "round": round}
-            label = f"round {round}"
-            artifact_id = f"session:{session_id}:round:{round}"
-            artifact_source = {"kind": "session_round", "session_id": session_id,
-                               "round": round}
-        elif slot in ("source", "reference"):
-            source = {"session_id": session_id, "slot": slot}
-            label = f"slot {slot}"
-            artifact_id = f"session:{session_id}:{slot}"
-            artifact_source = {"kind": "session_slot", "session_id": session_id,
-                               "slot": slot}
-        else:
-            raise StoreError("slot must be source or reference")
-        payload = self.session_tools.load_session_preview(source)
-        provenance = payload.provenance
-        verified = provenance["freshness"] == "verified"
-        artifact = build_artifact_ref_from_bytes(
-            payload.content, filename=payload.filename,
-            artifact_id=artifact_id, source=artifact_source,
-            purpose="verified" if verified else "analysis",
-            method="LrExportSession", freshness=provenance["freshness"],
-            evidence_status="verified_render" if verified else "unverified",
-            color_space="sRGB")
-        return _image_content_bytes(
-            payload.content, max_edge,
-            {"session_id": session_id, "label": label,
-             "integrity": provenance["integrity"],
-             "artifact_ref": artifact})
-
-    def _tool_trlr_get_xmp(self, session_id: str) -> dict:
-        return _json_content(self.wb.xmp_view(session_id))
-
-    def _tool_trlr_reset(self, session_id: str) -> dict:
-        return _json_content(self.wb.reset(session_id))
 
     def _tool_trlr_upload_photo(self, path: str) -> dict:
         p = Path(path)
         if not p.is_file():
             raise StoreError(f"no such file: {path}")
         return _json_content(self.wb.upload_photo(p.name, p.read_bytes()))
+
+    def _tool_trlr_import_photos(self, paths, request_id, recursive=False, move=False, move_root=None):
+        return _json_content(self.wb.import_photos(
+            paths, request_id, recursive=recursive, move=move, move_root=move_root))
 
     def _tool_trlr_list_develop_presets(self, query="", limit=100, offset=0):
         return _json_content(self.wb.preset_tools.list(query, limit, offset))
@@ -1440,33 +1193,33 @@ class McpServer:
         return _json_content(self.wb.studio.action(episode_id, 'verify', **args))
 
     def _tool_trlr_episode_artifact(self, episode_id, name, max_edge=1024, crop=None):
-        path = self.wb.studio.artifact(episode_id, name)
+        path, content = self.wb.studio.artifact_payload(episode_id, name)
         if path.suffix in ('.xmp', '.json'):
-            return {"content": [_text(path.read_text(encoding='utf-8'))]}
+            return {"content": [_text(content.decode('utf-8'))]}
         max_edge = self._codex_preview_edge(max_edge)
         if name == 'reference.jpg':
-            artifact = build_artifact_ref(
-                path, artifact_id=f'episode:{episode_id}:reference',
+            artifact = build_artifact_ref_from_bytes(
+                content, filename=name, artifact_id=f'episode:{episode_id}:reference',
                 source={'kind': 'episode_reference', 'episode_id': episode_id},
                 purpose='verified', method='LrExportSession', freshness='verified',
                 evidence_status='verified_render', color_space='sRGB')
         elif name.startswith('v') and name.endswith('.jpg'):
             number = int(name[1:-4])
-            record = self.wb.studio.get(episode_id)['versions'][number]
-            artifact = record.get('artifact') or build_artifact_ref(
-                path, artifact_id=f'episode:{episode_id}:v{number}',
+            record = self.wb.studio.raw(episode_id)['versions'][number]
+            artifact = build_artifact_ref_from_bytes(
+                content, filename=name, artifact_id=f'episode:{episode_id}:v{number}',
                 source={'kind': 'episode_render', 'episode_id': episode_id,
                         'version': number, 'photo_uuid': record.get('photo_uuid')},
                 purpose='verified', method='LrExportSession', freshness='verified',
                 evidence_status='verified_render', color_space='sRGB')
         else:
-            artifact = build_artifact_ref(
-                path, artifact_id=f'episode:{episode_id}:{name}',
+            artifact = build_artifact_ref_from_bytes(
+                content, filename=name, artifact_id=f'episode:{episode_id}:{name}',
                 source={'kind': 'derived_image', 'episode_id': episode_id, 'name': name},
                 purpose='analysis', method='ImageTools.compare', freshness='derived',
                 evidence_status='derived', color_space='sRGB')
         if crop is None:
-            return _image_content(path, max_edge, {'episode_id': episode_id,
+            return _image_content_bytes(content, max_edge, {'episode_id': episode_id,
                                                     'artifact': name,
                                                     'artifact_ref': artifact})
         import math
@@ -1476,7 +1229,7 @@ class McpServer:
         x, y, w, h = crop
         if min(x,y) < 0 or min(w,h) <= 0 or x+w > 1 or y+h > 1:
             raise ValueError('crop outside normalized image bounds')
-        with Image.open(path) as original:
+        with Image.open(io.BytesIO(content)) as original:
             box = (round(x*original.width), round(y*original.height), round((x+w)*original.width), round((y+h)*original.height))
             if box[2] <= box[0] or box[3] <= box[1]:
                 raise ValueError('crop is smaller than one pixel')

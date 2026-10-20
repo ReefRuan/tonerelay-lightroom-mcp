@@ -19,7 +19,7 @@ sys.path.insert(0, str(WB / "tests"))
 
 from test_studio import FakeLR  # noqa: E402
 from workbench.runtime import Workbench  # noqa: E402
-from workbench.store import Store  # noqa: E402
+from workbench.state import RuntimeState  # noqa: E402
 from workbench_mcp.server import McpServer, TOOLS  # noqa: E402
 
 
@@ -42,7 +42,7 @@ class RetiredMcpSurfaceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.server = McpServer(Workbench(Store(Path(self.tmp.name)), FakeLR()))
+        self.server = McpServer(Workbench(RuntimeState(Path(self.tmp.name)), FakeLR()))
 
     def test_retired_tools_are_not_advertised(self):
         names = [tool["name"] for tool in TOOLS]

@@ -28,7 +28,7 @@ from PIL import Image
 from workbench.runtime import Workbench
 from lr_ops.configuration import defaults
 from workbench.folders import DEFAULT_EXTENSIONS
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench_mcp.server import TOOLS, McpServer
 
 MCP_DIR = Path(__file__).resolve().parents[1]
@@ -115,7 +115,7 @@ class FolderToolTestCase(unittest.TestCase):
                              "extensions": list(DEFAULT_EXTENSIONS), "recursive": False}
         (self.data / "config.json").write_text(json.dumps(config), encoding="utf-8")
         self.bridge = FolderBridge()
-        self.server = McpServer(Workbench(Store(self.data), self.bridge))
+        self.server = McpServer(Workbench(RuntimeState(self.data), self.bridge))
 
     def put(self, name, content=JPEG_BYTES, directory=None):
         target = (directory or self.photos) / name
@@ -152,12 +152,12 @@ class SchemaTestCase(unittest.TestCase):
         names = [tool["name"] for tool in TOOLS]
         self.assertEqual(len(names), len(set(names)), "工具名必须唯一")
         for required in ("trlr_health", "trlr_list_photos", "trlr_get_photo_preview",
-                         "trlr_create_session", "trlr_capabilities",
+                         "trlr_create_episode", "trlr_capabilities",
                          "trlr_image_measure", "trlr_image_compare",
                          "trlr_list_develop_presets", "trlr_render_parameter_variants",
                          "trlr_export_image",
-                         "trlr_get_full_settings", "trlr_round_diff",
-                         "trlr_replay_round", "trlr_export_session_context"):
+                         "trlr_get_photo_settings", "trlr_episode_diff",
+                         "trlr_replay_episode"):
             self.assertIn(required, names)
 
 

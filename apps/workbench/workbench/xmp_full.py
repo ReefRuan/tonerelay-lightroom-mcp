@@ -1,7 +1,7 @@
 """全量 develop 快照 → 标准 XMP 文本的服务端组装。
 
-`trlr_get_xmp` 只回基础曝光组；这里把 `get_develop_snapshot` 的全量回读
-（实测约 171 个键，含曲线/HSL/颗粒/校准等）序列化成标准 XMP 预设文本。
+把 `get_develop_snapshot` 的全量回读（含曲线/HSL/颗粒/校准等）
+序列化成 XMP 文本。组装文本不证明 SDK 回放或原生预设导入通过。
 
 取舍（如实记录在返回值里）：
 - 数字 → crs 属性；布尔 → True/False；短字符串 → XML 转义后的属性；

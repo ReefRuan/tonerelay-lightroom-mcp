@@ -18,7 +18,7 @@ from PIL import Image
 
 import workbench_mcp.server as server_module
 from workbench.runtime import Workbench
-from workbench.store import Store
+from workbench.state import RuntimeState
 from workbench.targets import LrOpsRouter
 from workbench_mcp.server import McpServer, TOOLS, build_workbench
 
@@ -94,7 +94,7 @@ class PreviewProtocolTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.bridge = ThumbnailBridge()
-        self.workbench = Workbench(Store(Path(self.tmp.name)), self.bridge)
+        self.workbench = Workbench(RuntimeState(Path(self.tmp.name)), self.bridge)
         self.server = McpServer(self.workbench)
 
     @staticmethod
