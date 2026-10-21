@@ -13,9 +13,14 @@ Prepare Lightroom Classic, an Agent client that supports local MCP servers, and 
 | Purpose | GitHub primary | Gitee backup |
 | --- | --- | --- |
 | Complete MCP source, including the installer, Lightroom plug-in, and client Plugin/Skill | [tonerelay-lightroom-mcp](https://github.com/ReefRuan/tonerelay-lightroom-mcp) | [tonerelay-lightroom-mcp](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp) |
-| Complete Portal installation prompt (documentation) | [install-prompt.en.md](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md) | [install-prompt.en.md](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md) |
+| Complete installation prompt (bundled copy) | [INSTALL-PROMPT.en.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.en.md) | [INSTALL-PROMPT.en.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.en.md) |
+| FAQ and Windows troubleshooting (bundled copy) | [FAQ.en.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.en.md) | [FAQ.en.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.en.md) |
 
-To have an Agent perform the installation, give it the complete installation prompt above. Portal contains documentation and demonstrations, not MCP installation source; a Portal checkout cannot replace an MCP checkout. For detailed platform and client instructions, read the [installation Skill guide](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md) bundled with the selected MCP source version.
+To have an Agent perform setup, copy the [short prompt in the README](README.en.md#one-click-installation). It contains only the GitHub/Gitee MCP entry points: check existing installations read-only first; if source is needed, pin a full commit, obtain its complete snapshot under the dedicated ToneRelay installation directory, and read the local [INSTALL-PROMPT.en.md](INSTALL-PROMPT.en.md), [FAQ.en.md](FAQ.en.md), and this page completely. For a healthy compatible installation, connect only the additional client; do not reinstall or incidentally upgrade it merely to read documentation. Once this source is downloaded, installation does not depend on Portal being online. Portal maintains the website and documents but cannot replace the MCP source checkout.
+
+The English and Chinese prompt and FAQ copies come from Portal's public documents. [INSTALL-CONTEXT.json](INSTALL-CONTEXT.json) records their pinned source commit, file paths, and SHA-256 hashes. It checks documentation-copy consistency; it is not an artifact signature and does not independently establish trusted remote provenance. Maintain the documents in Portal first, then synchronize all four files and the manifest. Do not copy internal development material. Older tags may not contain these files: do not move existing tags or claim to have read missing documents.
+
+For detailed platform and client instructions, read the [installation Skill guide](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md) bundled with the selected MCP source version.
 
 Before obtaining source, verify the domain, owner, repository name, and public accessibility, and obtain the full commit SHA from verified official commit or release information. Use Git in a dedicated download directory to obtain and check out that fixed commit. Before running the installer, compare `git rev-parse HEAD` with the selected SHA, check source completeness, and retain the actual origin and verification record. `FULL_COMMIT_SHA` is only a placeholder here for a verified full commit, not a directly executable value. `main`, a short SHA, or a manually assigned version label is not a substitute for verification.
 
@@ -126,7 +131,7 @@ First check status through the `control` entry point provided by the installed v
 | Bridge is unreachable | Check Bridge status through the maintenance entry point returned by the installer. |
 | The Lightroom plug-in does not respond | Confirm that the Lightroom interface is available and the plug-in is enabled. After an upgrade, quit normally and reopen as needed. |
 | Catalog authorization is incomplete | Complete the initial confirmation using the actual Catalog name, or resolve an existing binding conflict. |
-| Python dependency downloads fail | Check the installation output and network connection. Use the dependency troubleshooting section in the [public FAQ](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.en.md). |
+| Python dependency downloads fail | Check the installation output and network connection. Use the dependency troubleshooting section in the [bundled FAQ](FAQ.en.md). |
 
 You can check client configuration files with `tools/check_client_mcp.py` in the source (JSON MCP configurations; TOML configurations require Python 3.11+). It checks startup paths and does not replace a real connection check in the client.
 

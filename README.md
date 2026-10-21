@@ -62,20 +62,22 @@ ToneRelay 提供后台批量浏览、比较和打标工具。如何选片，由�
 
 ## 一键安装
 
-复制下面整段提示词，发给支持本地 MCP 的 Agent，由它按完整指南完成安装。这里的“一键”是复制入口，不是点击后免确认安装。
+复制下面整段发给当前 Agent。两个链接是同一项目的官方主源和备用；Agent 会先检查已有安装，再读取仓库内的完整说明。“一键”指复制入口，系统确认和 Catalog 授权仍需本人完成。
 
 ```text
-请为当前 Agent 客户端安装或接入 ToneRelay for Lightroom Classic。
-先读取官方完整安装提示词，GitHub 不可达时使用 Gitee 文档备用：
-https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md
-https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md
+请在当前 Agent 客户端安装或接入 ToneRelay for Lightroom Classic。
+官方仓库，二选一：
+https://github.com/ReefRuan/tonerelay-lightroom-mcp
+https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
-按完整提示词及所选版本的 INSTALL.md 执行。先只读核验已有安装，健康兼容时只接入当前客户端，不顺便升级共享组件。需要下载时核验官方来源和完整 commit；可使用提示词中的官方 Gitee MCP 源码备用，固定版本，不混用组件，不把滞后镜像称为最新版。
-完成当前平台所需的 Lightroom 插件、MCP 和客户端支持的启动 Skill 接入，记录安装归属。保留照片、Catalog、预设和其他客户端配置；涉及 Catalog 绑定、模式或共享组件变更时先取得对应授权。保留 TLS 校验，不从未知来源下载依赖。
-完成后在当前客户端的真实新会话中只读验证工具发现、健康和当前选片，核对实际版本与路径。不能观察的结果标记待验证，不以进程启动代替验收，不修改照片或 Catalog 内容。
+先只读检查已有安装；健康兼容时只接入当前客户端，不重装或顺便升级。
+读取所选仓库，记录完整 commit，完整阅读根目录的 INSTALL-PROMPT.md、FAQ.md 和 INSTALL.md，再按要求执行。需要下载源码时，固定该 commit，将完整源码放入 ToneRelay 专用安装目录；不混用不同版本的组件。
+保留照片、Catalog 和其他客户端配置；完成必要授权及真实新会话的只读验收，未验证项如实报告。
 ```
 
-完整安装说明保留在本仓 `INSTALL.md`；使用说明在 `USAGE.md`，双源与排障流程保留在 Portal 原位文档。安装并验收完成后，打开 Lightroom Classic 与目标 Catalog、选中照片，在对话中说：
+完整上下文均在本仓：[安装提示词](INSTALL-PROMPT.md) · [FAQ](FAQ.md) · [平台安装说明](INSTALL.md)。提示词与 FAQ 从 Portal 的公开文档同步，[来源与文件校验值](INSTALL-CONTEXT.json)随源码保存；下载后可在本地读取，不依赖 Portal 在线。GitHub 不可达时可使用上述官方 Gitee 镜像，核对固定提交与文档是否齐全，不把滞后镜像称为最新版。
+
+安装并验收完成后，打开 Lightroom Classic 与目标 Catalog、选中照片，在对话中说：
 
 > 开始 Lightroom 修图。
 

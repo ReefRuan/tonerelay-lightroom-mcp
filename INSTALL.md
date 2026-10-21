@@ -13,9 +13,14 @@
 | 用途 | GitHub 主源 | Gitee 备用源 |
 | --- | --- | --- |
 | MCP 完整源码（含安装器、Lightroom 插件和客户端 Plugin／Skill） | [tonerelay-lightroom-mcp](https://github.com/ReefRuan/tonerelay-lightroom-mcp) | [tonerelay-lightroom-mcp](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp) |
-| Portal 完整安装提示词（文档） | [install-prompt.md](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) | [install-prompt.md](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md) |
+| 完整安装提示词（本仓副本） | [INSTALL-PROMPT.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.md) | [INSTALL-PROMPT.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.md) |
+| FAQ 与 Windows 排障（本仓副本） | [FAQ.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.md) | [FAQ.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.md) |
 
-希望由 Agent 完成安装时，将表中的完整安装提示词发给它。Portal 是说明与展示仓库，不是 MCP 安装源码；不能用 Portal checkout 代替 MCP checkout。需要平台和客户端的详细步骤时，读取所选 MCP 源码版本随附的 [安装 Skill 指南](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md)。
+希望由 Agent 完成安装时，复制 [README 的短提示词](README.md#一键安装)。它只带 MCP 的 GitHub／Gitee 两个入口：先只读检查已有安装；需要源码时固定完整提交，在 ToneRelay 专用安装目录取得完整快照，再完整阅读本地 [INSTALL-PROMPT.md](INSTALL-PROMPT.md)、[FAQ.md](FAQ.md) 和本页。健康兼容的已有安装只新增客户端，不为读取文档而重装或顺便升级。取得这份源码后不依赖 Portal 在线；Portal 是网页与文档维护源，不能用它的 checkout 代替 MCP 源码。
+
+安装提示词与 FAQ 的中英文副本均来自 Portal 的公开文档，[INSTALL-CONTEXT.json](INSTALL-CONTEXT.json)记录其固定来源提交、逐文件路径和 SHA-256；该清单用于检查文档副本一致性，不是安装工件签名，也不单独证明远端来源可信。维护时先更新 Portal，再同步四份文档与清单；不从内部开发资料复制安装说明。旧标签可能不包含这些文件：不要移动已有标签，也不要从缺少文档的旧快照假装读取成功。
+
+需要平台和客户端的详细步骤时，读取所选 MCP 源码版本随附的 [安装 Skill 指南](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md)。
 
 取得源码前核对域名、所有者、仓名与公开访问权限，并从已核验的官方提交或发行信息取得完整 commit SHA。在专用下载目录通过 Git 获取并检出该固定提交；运行安装器前，用 `git rev-parse HEAD` 对照选定 SHA，检查源码完整性，并保留真实来源与核验记录。`FULL_COMMIT_SHA` 只是此处表示“已核验完整提交”的占位名，不是可直接执行的值；`main`、短 SHA 或自行填写的版本标签不能代替核验。
 
@@ -126,7 +131,7 @@ Codex TOML、官方 Plugin 或 UI 管理的接入，改用官方模式登记实�
 | Bridge 不可达 | 使用安装器返回的维护入口查看 Bridge 状态。 |
 | Lightroom 插件没有响应 | 确认 Lightroom 界面可用和插件启用状态；升级后按需要正常退出并重新打开。 |
 | Catalog 授权未完成 | 按实际 Catalog 名称完成首次确认，或处理已有绑定冲突。 |
-| Python 依赖下载失败 | 检查安装输出与网络；使用 [公开 FAQ](https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/faq.md) 的依赖排障入口。 |
+| Python 依赖下载失败 | 检查安装输出与网络；使用[本仓 FAQ](FAQ.md) 的依赖排障入口。 |
 
 客户端配置文件可由源码中的 `tools/check_client_mcp.py` 检查（JSON MCP 清单；TOML 配置需要 Python 3.11+）。它用于检查启动路径，不会代替客户端的真实连接验证。
 

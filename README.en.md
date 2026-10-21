@@ -62,20 +62,22 @@ These presentation images come from Portal; trimming and rounded corners are for
 
 ## One-click installation
 
-Copy the entire prompt below into an agent that supports local MCP servers, and let it follow the complete installation guide. “One-click” refers to copying the prompt, not installing everything without confirmation.
+Copy this prompt into the current Agent. The two URLs are the official primary and fallback for the same project. The Agent checks existing installations first, then reads the complete instructions in this repository. “One-click” refers to copying; system confirmations and Catalog authorization still require the user.
 
 ```text
 Please install or connect ToneRelay for Lightroom Classic in the current Agent client.
-First read the complete official installation prompt. If GitHub is unreachable, use the Gitee documentation fallback:
-https://github.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
-https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.en.md
+Use either official repository:
+https://github.com/ReefRuan/tonerelay-lightroom-mcp
+https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
-Follow the complete prompt and the selected version's INSTALL.en.md. Start with read-only verification of any existing installation; if healthy and compatible, connect only this client without upgrading shared components. For downloads, verify the official origin and full commit. The prompt includes an official Gitee MCP source fallback: pin the version, do not mix components, and do not call a lagging mirror the latest.
-Connect the Lightroom plug-in, MCP, and startup Skill where supported by this platform and client, and record installation ownership. Preserve photos, Catalogs, presets, and other client configuration. Obtain the relevant authorization before changing Catalog binding, mode, or shared components. Keep TLS verification enabled and do not download dependencies from unknown sources.
-Verify tool discovery, health, and the current photo through read-only checks in a real new session in this client, including actual versions and paths. Mark unobservable results as pending; a running process is not acceptance. Do not modify photos or Catalog contents for verification.
+Check existing installations read-only first. If healthy and compatible, connect only this client; do not reinstall or incidentally upgrade shared components.
+Read the selected repository, record its full commit, and read INSTALL-PROMPT.en.md, FAQ.en.md, and INSTALL.en.md in its root completely before following them. If source needs downloading, pin that commit and obtain the complete source under the dedicated ToneRelay installation directory; do not mix component versions.
+Preserve photos, Catalogs, and other client configuration. Complete the required authorization and read-only acceptance checks in a real new client session; report anything that remains unverified.
 ```
 
-The complete installation guide remains in this repository's `INSTALL.en.md`, with usage in `USAGE.en.md`. Dual-source and troubleshooting procedures remain in Portal's original documents. After installation and verification, open Lightroom Classic and the target Catalog, select a photo, and say:
+The complete context is in this repository: [installation prompt](INSTALL-PROMPT.en.md) · [FAQ](FAQ.en.md) · [platform installation guide](INSTALL.en.md). The prompt and FAQ are synchronized from Portal's public documents; their [source and file hashes](INSTALL-CONTEXT.json) are stored with the source. Once downloaded, they can be read locally without reaching Portal. If GitHub is unavailable, use the official Gitee mirror above, verify the pinned commit and document availability, and do not call a lagging mirror the latest version.
+
+After installation and acceptance checks, open Lightroom Classic and the target Catalog, select a photo, and say:
 
 > Start editing in Lightroom.
 
