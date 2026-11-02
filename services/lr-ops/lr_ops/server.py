@@ -70,6 +70,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .configuration import active_store, runtime_data_root
+from .console_info import is_loopback, show_bridge_startup
 from .bridge_lifecycle import bridge_lock, path_fingerprint
 from . import __version__
 
@@ -129,10 +130,12 @@ class JobQueue:
         self._lock = threading.Lock()
         self._jobs: dict[str, dict] = {}
         self._order: list[str] = []
-        # Group -> last dispatch timestamp. Never-dispatched groups sort as 0,
+        # Group -> last dispatch sequence. Never-dispatched groups sort as 0,
         # ahead of any group that has had a turn, so a latecomer is not
-        # punished for jobs that ran before it existed.
-        self._group_last_dispatch: dict[str, float] = {}
+        # punished for jobs that ran before it existed. Logical turns do not
+        # collide when wall-clock timestamps are equal or move backwards.
+        self._group_last_dispatch: dict[str, int] = {}
+        self._dispatch_sequence = 0
         self._log_dir = log_dir
         self._load()
 
@@ -210,14 +213,13 @@ class JobQueue:
         the original pure-FIFO scan.
         """
         with self._lock:
-            pick: tuple[tuple[float, float], str] | None = None
+            pick: tuple[int, str] | None = None
             for job_id in self._order:
                 job = self._jobs[job_id]
                 if job["status"] != "queued":
                     continue
                 group = job.get("group") or DEFAULT_GROUP
-                key = (self._group_last_dispatch.get(group, 0.0),
-                       job.get("created_at", 0))
+                key = self._group_last_dispatch.get(group, 0)
                 if pick is None or key < pick[0]:
                     pick = (key, job_id)
             if pick is None:
@@ -227,7 +229,8 @@ class JobQueue:
             dispatched = {**job, "status": "dispatched"}
             self._append_log(dispatched)
             self._jobs[job_id] = dispatched
-            self._group_last_dispatch[job.get("group") or DEFAULT_GROUP] = time.time()
+            self._dispatch_sequence += 1
+            self._group_last_dispatch[job.get("group") or DEFAULT_GROUP] = self._dispatch_sequence
             return {
                 "job_id": dispatched["job_id"],
                 "command": dispatched["command"],
@@ -673,8 +676,10 @@ def run(port: int = PORT, host: str = HOST):
 
 def _serve(port: int, host: str):
     server = make_server(port=port, host=host)
+    bound_host, bound_port = server.server_address[:2]
+    show_bridge_startup(bound_host, bound_port, DATA_ROOT, LOG_DIR)
     print(f"lr-ops listening on http://{host}:{port} (Ctrl+C to stop)")
-    if host not in ("127.0.0.1", "localhost"):
+    if not is_loopback(bound_host):
         if (_BRIDGE["token"] if _BRIDGE else os.environ.get("LR_XMP_MIMIC_LOCAL_TOKEN")):
             print("  configured token required")
         else:

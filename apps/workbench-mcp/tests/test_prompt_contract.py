@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,19 @@ from workbench_mcp.server import McpServer, TOOLS
 
 
 class PromptContractTests(unittest.TestCase):
+    def test_folder_scope_contract_cannot_silently_disappear(self):
+        source = Path(__file__).resolve().parents[3] / "prompts"
+        for fragment in ("trlr_list_folders", "trlr_list_folder_photos",
+                         "目录只读查询不扩大照片写入范围"):
+            with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
+                copied = Path(tmp) / "prompts"
+                shutil.copytree(source, copied)
+                for section in (copied / "runtime-operator").glob("*.md"):
+                    content = section.read_text(encoding="utf-8")
+                    section.write_text(content.replace(fragment, ""), encoding="utf-8")
+                with self.assertRaises(PromptContractError):
+                    load_runtime_operator_prompt(copied / "manifest.json")
+
     def test_compiled_prompt_is_the_mcp_initialization_prompt(self):
         expected = load_runtime_operator_prompt()
         response = McpServer(object()).handle({

@@ -10,6 +10,7 @@ import json
 import threading
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -265,6 +266,18 @@ class TestGroupFairness(unittest.TestCase):
             # default(3) alternates with only(2): d1, o1, d2, o2, d3
             self.assertEqual(order,
                              [ids[0], ids[3], ids[1], ids[4], ids[2]])
+
+    def test_round_robin_survives_equal_or_backwards_wall_clock(self):
+        for times in ([1234.0] * 5, [1234.0, 1233.0, 1232.0, 1231.0, 1230.0]):
+            with self.subTest(times=times), tempfile.TemporaryDirectory() as root:
+                q = self.queue(root)
+                with mock.patch.object(server_mod.time, "time", return_value=1234.0):
+                    default = [q.submit("probe_client", {}) for _ in range(3)]
+                    other = [q.submit("probe_client", {}, group="other") for _ in range(2)]
+                with mock.patch.object(server_mod.time, "time", side_effect=times):
+                    order = [q.next_queued()["job_id"] for _ in range(5)]
+                self.assertEqual(order,
+                                 [default[0], other[0], default[1], other[1], default[2]])
 
     def test_group_survives_restart_and_stays_dispatchable(self):
         with tempfile.TemporaryDirectory() as root:
