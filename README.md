@@ -64,16 +64,19 @@ ToneRelay 提供后台批量浏览、比较和打标工具。如何选片，由�
 
 复制下面整段发给当前 Agent。两个链接是同一项目的官方主源和备用；Agent 会先检查已有安装，再读取仓库内的完整说明。“一键”指复制入口，系统确认和 Catalog 授权仍需本人完成。
 
+<!-- install-short-prompt:start -->
 ```text
-请在当前 Agent 客户端安装或接入 ToneRelay for Lightroom Classic。
+请在当前 Agent 客户端安装或更新 ToneRelay for Lightroom Classic。
+目标：v0.7.0；完整 commit：a7501464665c694ca17a9a013e76f203930e4d77。“最新”仅指此目标，不是 main。
 官方仓库，二选一：
 https://github.com/ReefRuan/tonerelay-lightroom-mcp
 https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
-先只读检查已有安装；健康兼容时只接入当前客户端，不重装或顺便升级。
-读取所选仓库，记录完整 commit，完整阅读根目录的 INSTALL-PROMPT.md、FAQ.md 和 INSTALL.md，再按要求执行。需要下载源码时，固定该 commit，将完整源码放入 ToneRelay 专用安装目录；不混用不同版本的组件。
-保留照片、Catalog 和其他客户端配置；完成必要授权及真实新会话的只读验收，未验证项如实报告。
+先只读检查：未安装则安装；已有较旧版本即使健康也更新到目标；版本与 commit 均相同且健康时只核验并接入，不重复安装。较新版本、开发版或来源不明时先报告差异，不静默降级。只有我明确要求“只接入客户端”或“不升级”时才跳过更新。
+核验所选仓库的目标 commit，完整阅读该提交根目录的 INSTALL-PROMPT.md、FAQ.md 和 INSTALL.md。本次已授权更新到目标版本所需的普通步骤；旧随仓库说明中的“仅接入时复用”不能取消这次更新授权。需要下载时，将完整源码放入 ToneRelay 专用安装根目录，组件统一到同一 commit；镜像滞后不能改变目标。
+保留照片、Catalog、数据、有效配置、访问模式、绑定、其他客户端条目和用户修改过的 Skill。完成必要授权及真实客户端的只读验收，报告实际运行版本与未验证项；不重放结果未知的写入。
 ```
+<!-- install-short-prompt:end -->
 
 完整上下文均在本仓：[安装提示词](INSTALL-PROMPT.md) · [FAQ](FAQ.md) · [平台安装说明](INSTALL.md)。提示词与 FAQ 从 Portal 的公开文档同步，[来源与文件校验值](INSTALL-CONTEXT.json)随源码保存；下载后可在本地读取，不依赖 Portal 在线。GitHub 不可达时可使用上述官方 Gitee 镜像，核对固定提交与文档是否齐全，不把滞后镜像称为最新版。
 

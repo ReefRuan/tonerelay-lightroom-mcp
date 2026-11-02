@@ -28,6 +28,12 @@ ToneRelay 提供图像测量与对比；哪张更好，还是由你和 Agent 判
 
 升级时使用已核对的新版并更新 ToneRelay 入口，保留个人数据和当前有效配置；全新安装不合并旧分散配置。
 
+## 已经安装，怎么更新到提示词最新版本？
+
+复制网页上同一份“安装与更新提示词”发给 Agent。提示词标明目标版本和完整 commit：旧安装即使健康也更新到目标；版本与 commit 相同且健康时只核验并接入。“最新”指这份提示词固定的版本，需要更新的目标时重新复制网页当前提示词。遇到较新版本、开发版或来源不明的本机安装，会先报告差异，不静默降级。
+
+更新保留个人数据、有效配置、Catalog 绑定与模式，以及其他客户端条目。Agent 会报告目标与实际运行版本，核对 Lightroom 加载的插件 build，并保留回退入口。只有你明确要求“只接入客户端”或“不升级”时才跳过更新。复制提示词或下载完成本身不代表更新已经生效。
+
 ## 插件是 full，Runtime 却期望 safe，怎么办？
 
 这是访问模式与保存的绑定不一致。若当前 Catalog 身份就是你已确认的目标，且你明确选择保留 `full`，Agent 可通过 Catalog 确认工具保存实际模式并重新检查授权，无需来回切 Plugin Manager。没有相应授权时先明确选择；Catalog 身份改变时须重新确认目标。不能仅因桥已连接就继续读写照片。
@@ -46,7 +52,17 @@ ToneRelay 提供图像测量与对比；哪张更好，还是由你和 Agent 判
 
 ## 已在一个 Agent 客户端使用 ToneRelay，换客户端还要重装吗？
 
-通常不用。先核对已有安装的来源、版本，以及 Runtime、Bridge、Lightroom 插件和 Catalog 授权是否健康；只装了某个客户端的 Plugin，不能直接证明共享组件都已就绪。确认可复用后，新客户端只需按自己的官方方式接入同一套本机 MCP；如果支持 Skill，也从同版本来源安装启动 Skill，并在新会话做只读连接检查。不要为了增加客户端重新下载、升级或注册一份 Lightroom 插件；某个共享组件确实损坏或不兼容时，才针对该层修复并说明对其他客户端的影响。
+明确只接入客户端时通常不用；同时要更新则使用网页安装与更新提示词。先核对已有安装的来源、版本，以及 Runtime、Bridge、Lightroom 插件和 Catalog 授权是否健康；只装了某个客户端的 Plugin，不能直接证明共享组件都已就绪。确认可复用后，新客户端只需按自己的官方方式接入同一套本机 MCP；如果支持 Skill，也从同版本来源安装启动 Skill，并在新会话做只读连接检查。不要为了增加客户端重新下载、升级或注册一份 Lightroom 插件；某个共享组件确实损坏或不兼容时，才针对该层修复并说明对其他客户端的影响。
+
+## Codex 插件页没有卡片，是没有装上 MCP 吗？
+
+不一定。独立 MCP 加启动 Skill 可以正常使用，不必安装完整客户端 Plugin。在 Codex 的“设置 → MCP 服务器”查看 `tonerelay-lightroom`，也可输入 `/mcp` 查看连接；更新后在此重启 MCP，再让 Agent 只读验证实际工具、health 和当前选片。只有注册完整 Plugin 时才检查它的卡片，避免为了显示卡片重复安装同一个 MCP。[Codex MCP 说明](https://learn.chatgpt.com/docs/extend/mcp)。
+
+## WorkBuddy 的技能必须走“上传技能”吗？
+
+不一定。WorkBuddy 会直接发现用户级技能目录：把与当前安装同一固定版本的 `tonerelay-lightroom/` 技能目录整体复制进去即可，位置是用户主目录下的 `~/.workbuddy/skills/tonerelay-lightroom/`（Windows 上即 `%USERPROFILE%\.workbuddy\skills\tonerelay-lightroom\`），保留其中的 `SKILL.md`、`references/` 和 `agents/`。放入后在新会话的技能列表里应能看到 `tonerelay-lightroom` 并可调用。该路径在 Windows 版 WorkBuddy（5.7.6）实测可直接发现，无需先打包 ZIP 或走“专家·技能·连接器 → 技能 → 添加技能 → 上传技能”；官方上传入口仍然可用，适合不便直接操作文件目录的情况。两条路都只交付技能，不安装 Runtime、Lightroom 插件或 MCP 连接。
+
+注意：使用与当前版本一致的已核验来源；保留本地已修改的技能，不静默覆盖；不要放入整个 Runtime、源码检出或 Codex 插件；技能是否就绪以客户端技能列表实际发现为准，仅磁盘上有文件不证明已加载；WorkBuddy 的 MCP 条目仍需单独写入 `~/.workbuddy/mcp.json` 并在连接器面板启用/信任，技能与 MCP 分别验证；其他平台或版本请按实际发现结果核对。
 
 ## Windows 和 macOS 的卸载能力一样吗？
 

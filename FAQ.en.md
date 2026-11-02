@@ -30,6 +30,12 @@ Ask the Agent to “Check the ToneRelay version” and report the actual MCP ver
 
 An upgrade uses the verified newer version and updates ToneRelay entry points while preserving personal data and the currently valid configuration. A fresh installation does not merge old scattered configuration.
 
+## Already installed? How do I update to the latest prompt version?
+
+Copy the same installation/update prompt from the website and send it to your Agent. It names a target version and full commit: an older installation is updated to that target even if healthy; an identical healthy version and commit is only verified and reconnected. “Latest” means the version pinned in that prompt, so copy the current prompt for a newer target. A newer, development, or unverifiable local build is reported before replacement, with no silent downgrade.
+
+The update preserves personal data, effective configuration, Catalog bindings and mode, and other client entries. The Agent reports the target and actual running versions, verifies the loaded Lightroom plug-in build, and retains a rollback entry. Only an explicit “client connection only” or “no upgrade” request skips the update. Copying the prompt or downloading files alone does not prove the update is complete.
+
 ## What if the plug-in is in full mode but the Runtime expects safe?
 
 The access mode and saved binding are inconsistent. If the current Catalog identity is the target you have confirmed, and you explicitly choose to retain `full`, the Agent can save the actual mode with the Catalog confirmation tool and recheck authorization, without making you switch back and forth in Plug-in Manager. If that authorization does not exist, make an explicit choice first; if the Catalog identity changes, confirm the target again. A connected bridge alone is not permission to continue reading or writing photos.
@@ -48,7 +54,17 @@ Yes, from a pinned version of the public source. The [primary GitHub MCP reposit
 
 ## I already use ToneRelay in one Agent client. Do I need to reinstall for another?
 
-Usually not. First verify the existing installation's source and version, and the health of the Runtime, Bridge, Lightroom plug-in, and Catalog authorization. Having only a client Plugin installed does not prove the shared components are ready. Once reuse is verified, the new client only needs its own official connection method to the same local MCP. If it supports Skills, also install the startup Skill from the same-version source, then check the connection read-only in a new session. Do not download, upgrade, or register another Lightroom plug-in just to add a client. Only repair a particular shared layer if it is actually broken or incompatible, and explain the effect on other clients.
+For an explicit client-connection-only request, usually not; to update as well, use the website installation/update prompt. First verify the existing installation's source and version, and the health of the Runtime, Bridge, Lightroom plug-in, and Catalog authorization. Having only a client Plugin installed does not prove the shared components are ready. Once reuse is verified, the new client only needs its own official connection method to the same local MCP. If it supports Skills, also install the startup Skill from the same-version source, then check the connection read-only in a new session. Do not download, upgrade, or register another Lightroom plug-in just to add a client. Only repair a particular shared layer if it is actually broken or incompatible, and explain the effect on other clients.
+
+## No Codex Plugin card: does that mean MCP is missing?
+
+Not necessarily. A direct MCP connection with the startup Skill works without a complete client Plugin. Check `tonerelay-lightroom` under Settings → MCP servers, or type `/mcp` to see connections. Restart MCP there after updating, then ask the Agent to verify the actual tools, health, and selection readback. Check a Plugin card only when installing a complete Plugin; avoid duplicate MCP registrations merely to show a card. See the [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp).
+
+## Does the WorkBuddy skill have to go through "upload skill"?
+
+Not necessarily. WorkBuddy discovers skills directly in the user-level skills directory: copy the same-version `tonerelay-lightroom/` skill directory there as a whole, to `~/.workbuddy/skills/tonerelay-lightroom/` in the user's home directory (on Windows, `%USERPROFILE%\.workbuddy\skills\tonerelay-lightroom\`), keeping `SKILL.md`, `references/` and `agents/`. After that, `tonerelay-lightroom` should appear in the skill list of a new session and be invocable. This path was verified on WorkBuddy 5.7.6 for Windows: placing the directory there made the skill discoverable immediately, with no ZIP packaging or the "Experts, Skills and Connectors, Skills, Add skill, Upload skill" flow required. The official upload entry still works and suits cases where direct file access is inconvenient. Both paths deliver only the skill; they do not install the Runtime, the Lightroom plug-in, or the MCP connection.
+
+Notes: use a verified source that matches the current version; preserve locally modified skills instead of overwriting them silently; do not place the whole Runtime, a source checkout, or the Codex plugin there; readiness is proven by the client's actual skill discovery, not by files on disk alone; the WorkBuddy MCP entry still has to be written to `~/.workbuddy/mcp.json` separately and enabled/trusted in the connector panel, so verify the skill and MCP separately; on other platforms or versions, verify against the actual discovery result.
 
 ## Do Windows and macOS have the same uninstall capabilities?
 

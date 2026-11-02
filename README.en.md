@@ -64,16 +64,19 @@ These presentation images come from Portal; trimming and rounded corners are for
 
 Copy this prompt into the current Agent. The two URLs are the official primary and fallback for the same project. The Agent checks existing installations first, then reads the complete instructions in this repository. “One-click” refers to copying; system confirmations and Catalog authorization still require the user.
 
+<!-- install-short-prompt:start -->
 ```text
-Please install or connect ToneRelay for Lightroom Classic in the current Agent client.
+Please install or update ToneRelay for Lightroom Classic in the current Agent client.
+Target: v0.7.0; full commit: a7501464665c694ca17a9a013e76f203930e4d77. “Latest” means this target, not main.
 Use either official repository:
 https://github.com/ReefRuan/tonerelay-lightroom-mcp
 https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
-Check existing installations read-only first. If healthy and compatible, connect only this client; do not reinstall or incidentally upgrade shared components.
-Read the selected repository, record its full commit, and read INSTALL-PROMPT.en.md, FAQ.en.md, and INSTALL.en.md in its root completely before following them. If source needs downloading, pin that commit and obtain the complete source under the dedicated ToneRelay installation directory; do not mix component versions.
-Preserve photos, Catalogs, and other client configuration. Complete the required authorization and read-only acceptance checks in a real new client session; report anything that remains unverified.
+Check the existing installation read-only first: install if absent; update an older installation to the target even if healthy; verify and reconnect an identical healthy version and commit without reinstalling. Do not silently downgrade a newer, development, or unverified build; report the difference. Only skip updating if I explicitly request client connection only or no upgrade.
+Verify the target commit in the selected repository and read INSTALL-PROMPT.en.md, FAQ.en.md, and INSTALL.en.md at that commit completely. This request authorizes ordinary installation/update steps to the target; older bundled instructions about connection-only reuse do not cancel that authorization. Obtain complete source under the dedicated ToneRelay installation root when needed, and keep all components on the same commit. A lagging mirror must not change the target.
+Preserve photos, Catalogs, data, effective configuration, access mode, bindings, other client entries, and locally modified Skills. Complete required authorization and real-client read-only acceptance; report running versions and anything unverified. Never replay a write with an unknown outcome.
 ```
+<!-- install-short-prompt:end -->
 
 The complete context is in this repository: [installation prompt](INSTALL-PROMPT.en.md) · [FAQ](FAQ.en.md) · [platform installation guide](INSTALL.en.md). The prompt and FAQ are synchronized from Portal's public documents; their [source and file hashes](INSTALL-CONTEXT.json) are stored with the source. Once downloaded, they can be read locally without reaching Portal. If GitHub is unavailable, use the official Gitee mirror above, verify the pinned commit and document availability, and do not call a lagging mirror the latest version.
 
