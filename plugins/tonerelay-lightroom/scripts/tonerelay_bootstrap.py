@@ -1088,14 +1088,26 @@ def component_action(runtime_root: Path, component: str, action: str, *,
                     "next": f"refusing to install into {runtime_root}"}}, 2)
             install_source = source_root or bundled_source_root()
             try:
-                inside_runtime = runtime_root.resolve() in install_source.resolve().parents
-            except OSError:
-                inside_runtime = False
-            if inside_runtime:
+                resolved_runtime_root = runtime_root.resolve()
+                resolved_source = install_source.resolve()
+                inside_runtime = resolved_runtime_root in resolved_source.parents
+                downloads_root = resolved_runtime_root / "downloads"
+                resolved_downloads_root = downloads_root.resolve()
+                source_is_managed_download = (
+                    source_root is not None
+                    and resolved_downloads_root == downloads_root
+                    and resolved_runtime_root in resolved_downloads_root.parents
+                    and resolved_downloads_root in resolved_source.parents
+                )
+            except (OSError, RuntimeError):
+                inside_runtime = True
+                source_is_managed_download = False
+            if inside_runtime and not source_is_managed_download:
                 return emit({"status": "manual_action_required", "diagnostic": {
                     "code": "runtime.install_needs_source", "safe_to_retry": True,
                     "next": f"{install_source} is inside {runtime_root}; pass "
-                            "--source-root <verified checkout> to install a source tree, "
+                            "--source-root <verified checkout> (or a verified source below "
+                            f"{runtime_root / 'downloads'}) to install a source tree, "
                             f"or '{control_path(runtime_root)} repair' to rebuild in place"}}, 2)
             try:
                 runtime_root.mkdir(parents=True, exist_ok=True)

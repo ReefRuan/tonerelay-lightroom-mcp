@@ -408,6 +408,17 @@ class ComponentOperationTests(unittest.TestCase):
             self.assertEqual(result["diagnostic"]["code"],
                              "runtime.install_needs_source")
 
+    def test_install_accepts_an_explicit_source_under_managed_downloads(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runtime"
+            source = self.source_tree(root / "downloads")
+            with mock.patch.object(bootstrap, "install", return_value=0) as install:
+                exit_code = bootstrap.component_action(
+                    root, "runtime", "install", source_root=source, version="v2")
+
+            self.assertEqual(exit_code, 0)
+            install.assert_called_once_with(root, source, "v2", client="native")
+
     def test_every_component_answers_every_verb(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "runtime"
