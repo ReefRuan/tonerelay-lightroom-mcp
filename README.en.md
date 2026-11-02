@@ -67,13 +67,13 @@ Copy this prompt into the current Agent. The two URLs are the official primary a
 <!-- install-short-prompt:start -->
 ```text
 Please install or update ToneRelay for Lightroom Classic in the current Agent client.
-Target: v0.7.0; full commit: a7501464665c694ca17a9a013e76f203930e4d77. “Latest” means this target, not main.
-Use either official repository:
+Target: the latest code on the official public MCP main branch at execution time. Resolve and record its full 40-character commit once, then keep this installation on that commit even if main advances. A version/commit I explicitly request takes precedence.
+Official primary source and fallback:
 https://github.com/ReefRuan/tonerelay-lightroom-mcp
 https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
 Check the existing installation read-only first: install if absent; update an older installation to the target even if healthy; verify and reconnect an identical healthy version and commit without reinstalling. Do not silently downgrade a newer, development, or unverified build; report the difference. Only skip updating if I explicitly request client connection only or no upgrade.
-Verify the target commit in the selected repository and read INSTALL-PROMPT.en.md, FAQ.en.md, and INSTALL.en.md at that commit completely. This request authorizes ordinary installation/update steps to the target; older bundled instructions about connection-only reuse do not cancel that authorization. Obtain complete source under the dedicated ToneRelay installation root when needed, and keep all components on the same commit. A lagging mirror must not change the target.
+Verify public repository identity, resolve main through the official API or Git, and read INSTALL-PROMPT.en.md, FAQ.en.md, and INSTALL.en.md at the resolved commit completely. The resolved commit overrides older targets in bundled prompts. This request authorizes ordinary installation/update steps. Obtain complete source under the dedicated ToneRelay installation root and keep all components on that commit. After resolving GitHub main, a mirror must provide the same commit; if only Gitee is reachable initially, resolve its main and report that GitHub's latest state could not be verified.
 Preserve photos, Catalogs, data, effective configuration, access mode, bindings, other client entries, and locally modified Skills. Complete required authorization and real-client read-only acceptance; report running versions and anything unverified. Never replay a write with an unknown outcome.
 ```
 <!-- install-short-prompt:end -->

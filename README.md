@@ -67,13 +67,13 @@ ToneRelay 提供后台批量浏览、比较和打标工具。如何选片，由�
 <!-- install-short-prompt:start -->
 ```text
 请在当前 Agent 客户端安装或更新 ToneRelay for Lightroom Classic。
-目标：v0.7.0；完整 commit：a7501464665c694ca17a9a013e76f203930e4d77。“最新”仅指此目标，不是 main。
-官方仓库，二选一：
+目标：执行时官方公开 MCP 仓库 main 分支的最新代码。先查询并记录一次完整的 40 位 commit，整次安装统一使用该提交，期间 main 前进也不混装；我明确指定版本或 commit 时按我的指定。
+官方主源及备用：
 https://github.com/ReefRuan/tonerelay-lightroom-mcp
 https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
 先只读检查：未安装则安装；已有较旧版本即使健康也更新到目标；版本与 commit 均相同且健康时只核验并接入，不重复安装。较新版本、开发版或来源不明时先报告差异，不静默降级。只有我明确要求“只接入客户端”或“不升级”时才跳过更新。
-核验所选仓库的目标 commit，完整阅读该提交根目录的 INSTALL-PROMPT.md、FAQ.md 和 INSTALL.md。本次已授权更新到目标版本所需的普通步骤；旧随仓库说明中的“仅接入时复用”不能取消这次更新授权。需要下载时，将完整源码放入 ToneRelay 专用安装根目录，组件统一到同一 commit；镜像滞后不能改变目标。
+核验公开仓库身份，通过官方 API 或 Git 解析 main，完整阅读所得提交根目录的 INSTALL-PROMPT.md、FAQ.md 和 INSTALL.md。源码附带旧提示词的提交号不能替换本次解析结果。本次已授权普通安装／更新步骤。将完整源码放入 ToneRelay 专用安装根目录，组件统一到该提交。已解析 GitHub main 时，备用源须提供同一提交；最初仅 Gitee 可达时解析其 main，并说明尚未核验 GitHub 的最新状态。
 保留照片、Catalog、数据、有效配置、访问模式、绑定、其他客户端条目和用户修改过的 Skill。完成必要授权及真实客户端的只读验收，报告实际运行版本与未验证项；不重放结果未知的写入。
 ```
 <!-- install-short-prompt:end -->

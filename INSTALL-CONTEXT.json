@@ -2,27 +2,27 @@
   "schema_version": "tonerelay-install-context-v1",
   "maintainer": "Reef Ruan",
   "source_repository": "https://github.com/ReefRuan/tonerelay-portal",
-  "source_commit": "b3f6c97bdc16eecf427c5d068fc1652bd0b89ae2",
+  "source_commit": "2ebb00442513492bf1b1df831155ce7666f7c11e",
   "files": [
     {
       "path": "INSTALL-PROMPT.md",
       "source_path": "docs/install-prompt.md",
-      "sha256": "981cc7f065aacf2e08e70f5f7fe9827d7f2ba83d72de5db7b41c9509ee59a1cd"
+      "sha256": "f8bb8026aeaa5d36ff4ecf72fafedb4330fc55ca46ffd76e9c831d43ddb05f81"
     },
     {
       "path": "FAQ.md",
       "source_path": "docs/faq.md",
-      "sha256": "2b4b767e4b7ea37e6fead770beb2fda7192b84fd4c0bc12934073f35ad945c19"
+      "sha256": "00068bc7a18caf6a9a2b6bba5c2e4fcd454d8b191fe61563c0cc706efc933ab0"
     },
     {
       "path": "INSTALL-PROMPT.en.md",
       "source_path": "docs/install-prompt.en.md",
-      "sha256": "a455b20cc9a4a4cd9f2cafb2872de13abacc63cb78ca92bad419958955c75176"
+      "sha256": "656d14725a74eb28cbf576697207822b51c5c89e9b624c70a6d9455373c204ce"
     },
     {
       "path": "FAQ.en.md",
       "source_path": "docs/faq.en.md",
-      "sha256": "c6e461c2b5482c9648bd06de8a19a787d1e96dc4a75e7c875043139a87670c26"
+      "sha256": "587c2327c6da507dba60aaaf30b6f655c340b924112986133c16b7f886cd5727"
     }
   ]
 }

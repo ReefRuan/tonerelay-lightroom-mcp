@@ -28,9 +28,9 @@ ToneRelay 提供图像测量与对比；哪张更好，还是由你和 Agent 判
 
 升级时使用已核对的新版并更新 ToneRelay 入口，保留个人数据和当前有效配置；全新安装不合并旧分散配置。
 
-## 已经安装，怎么更新到提示词最新版本？
+## 已经安装，怎么更新到最新代码？
 
-复制网页上同一份“安装与更新提示词”发给 Agent。提示词标明目标版本和完整 commit：旧安装即使健康也更新到目标；版本与 commit 相同且健康时只核验并接入。“最新”指这份提示词固定的版本，需要更新的目标时重新复制网页当前提示词。遇到较新版本、开发版或来源不明的本机安装，会先报告差异，不静默降级。
+复制网页上同一份“安装与更新提示词”发给 Agent。每次执行都会查询官方公开 MCP 仓库 main 的最新完整 commit，再锁定该提交完成整次安装；以后 main 更新，无需修改或重新复制提示词中的版本号。旧安装即使健康也更新；已是本次解析的相同 commit 且健康时只核验并接入。明确指定版本或 commit 时按你的指定。较晚或分叉提交、开发版及来源不明的安装先报告差异，不静默降级。
 
 更新保留个人数据、有效配置、Catalog 绑定与模式，以及其他客户端条目。Agent 会报告目标与实际运行版本，核对 Lightroom 加载的插件 build，并保留回退入口。只有你明确要求“只接入客户端”或“不升级”时才跳过更新。复制提示词或下载完成本身不代表更新已经生效。
 
@@ -95,7 +95,7 @@ macOS 新安装设计使用根目录下的 `config.json`，集中保存目录、
 - MCP 完整安装源码及随仓库提供的安装提示词、FAQ：[GitHub 主源](https://github.com/ReefRuan/tonerelay-lightroom-mcp)／[Gitee 源码备用](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp)。取得包含安装文档的固定提交后，完整阅读根目录的 `INSTALL-PROMPT.md`、`FAQ.md` 与 `INSTALL.md`，不必再访问 Portal 才能安装。GitHub 不可达时可从 Gitee 获取同一固定完整 commit 的源码；旧标签或滞后镜像可能没有新增文档，应如实报告，不移动旧标签或混装组件。Portal 仓库不能代替 MCP 源码。
 - 公开安装文档的维护源、网页与风格资源：[GitHub Portal](https://github.com/ReefRuan/tonerelay-portal)／[Gitee Portal 备用](https://gitee.com/ReefRuan/tonerelay-portal)。旧 MCP 版本未附带文档时，可另外读取 [Gitee 安装提示词](https://gitee.com/ReefRuan/tonerelay-portal/blob/main/docs/install-prompt.md)，记录文档的固定提交，仍按目标源码版本的能力执行。六个正式风格包的 ZIP 备用目录是 https://gitee.com/ReefRuan/tonerelay-portal/raw/main/style-packs/downloads/ ，画廊详情也提供国内备用地址；E01、E02 先核对镜像版本和文件是否存在，不能假定已经同步。
 
-镜像可能滞后，`main` 和“备用”都不代表最新版。先核验官方所有者、公开访问、固定完整 commit 和文件完整性，不混装不同 commit 的组件。最初仅镜像可达时，报告选用的镜像、固定 commit 与核验依据，不必先恢复 GitHub 才能使用官方备用；没有足够依据则停止安装下载分支并报告，仍可阅读文档或核验复用健康本机安装。
+每次执行先解析官方 main 的最新完整提交；镜像可能滞后，仅解析备用源时须说明主源最新状态未核验。先核验官方所有者、公开访问、固定完整 commit 和文件完整性，不混装不同 commit 的组件。最初仅镜像可达时，报告选用的镜像、固定 commit 与核验依据，不必先恢复 GitHub 才能使用官方备用；没有足够依据则停止安装下载分支并报告，仍可阅读文档或核验复用健康本机安装。
 
 源码备用不会自动解决 pip 依赖下载。需要 PIP_INDEX_URL 时仅使用核验过的可信 HTTPS 索引，限本次进程或专用环境并记录，不静默改全局配置或泄露凭据；保留 TLS 校验，不用 --trusted-host、关闭证书校验或不明包绕过失败。
 

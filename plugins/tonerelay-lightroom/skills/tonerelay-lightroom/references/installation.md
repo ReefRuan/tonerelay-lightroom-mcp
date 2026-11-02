@@ -15,6 +15,16 @@ Install an explicit verified source tree with an immutable label. Verify canonic
 source identity and integrity; the help page is guidance, not an installation
 artifact.
 
+For a normal install/update request, resolve the latest full commit on the
+official public MCP repository's `main` branch at execution time, using the
+official API or Git remote ref. Verify repository identity and public access,
+record the resolved SHA, and use that immutable source throughout the operation.
+Resolve again on the next request, not between installation stages. An explicit
+user version/commit takes precedence; connection-only/no-upgrade requests may
+reuse verified installed source. If only the official mirror is reachable,
+resolve its main and disclose that primary-source freshness remains unverified.
+An older bundled prompt's embedded SHA must not replace this resolved target.
+
 A standalone client skill copy does not include the Plugin's bootstrap scripts.
 Use the known installed control entry, or locate those scripts in the verified
 installation source; do not assume they exist beneath the client's skill folder.

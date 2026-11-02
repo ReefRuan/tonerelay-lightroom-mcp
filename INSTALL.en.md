@@ -8,7 +8,7 @@ This page and the public Skill guides included in the package form the distribut
 
 ## Before installing
 
-Prepare Lightroom Classic, an Agent client that supports local MCP servers, and Python 3.10 or later. Use a verified full commit SHA for the installation source. Resolve any version or tag to that fixed commit first, then give it to the Agent so it does not switch source versions during installation.
+Prepare Lightroom Classic, an Agent client that supports local MCP servers, and Python 3.10 or later. By default, each install/update queries the latest full commit on this official public main branch through the official API or Git ref, then freezes that commit for the installation. The next execution of the same prompt resolves main again. An explicit user version or commit takes precedence after verification.
 
 | Purpose | GitHub primary | Gitee backup |
 | --- | --- | --- |

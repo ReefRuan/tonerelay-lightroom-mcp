@@ -8,7 +8,7 @@
 
 ## 安装前
 
-准备 Lightroom Classic、支持本地 MCP 的 Agent 客户端，以及 Python 3.10 或以上。安装源码使用已经核验的完整 commit SHA；版本或标签应先解析到该固定提交，再把它交给 Agent，避免安装过程中切换到不同源码。
+准备 Lightroom Classic、支持本地 MCP 的 Agent 客户端，以及 Python 3.10 或以上。默认每次安装或更新先通过官方 API 或 Git ref 查询本公开仓库 main 的最新完整 commit SHA，再锁定该提交完成本次安装；下次执行相同提示词时重新查询。用户明确指定版本或 commit 时按指定目标核验。
 
 | 用途 | GitHub 主源 | Gitee 备用源 |
 | --- | --- | --- |
