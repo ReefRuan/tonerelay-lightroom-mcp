@@ -14,6 +14,8 @@ import sys
 import threading
 import uuid
 from .refresh import source_root, installation_root, active_source
+from lr_ops.bytecode_cache import GenerationCache
+from lr_ops.configuration import active_store
 
 
 class WorkerError(OSError):
@@ -54,12 +56,22 @@ class Worker:
         env["TONERELAY_MCP_GENERATION"] = generation
         cache_base = Path(env.get("PYTHONPYCACHEPREFIX") or
                           (Path(env.get("LR_XMP_MIMIC_RUNTIME_DATA_ROOT", str(Path.home() / ".cache/tonerelay"))) / "cache/python"))
-        env["PYTHONPYCACHEPREFIX"] = str(cache_base / "mcp" / generation)
+        managed = active_store()
+        if managed is not None:
+            cache_base = managed.paths()["cache"] / "python"
+        GenerationCache.prune(cache_base / "mcp")
+        self.cache = GenerationCache(cache_base / "mcp", generation)
+        env["PYTHONPYCACHEPREFIX"] = str(self.cache.path)
         command = [python, "-m", "workbench_mcp.worker"]
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=None, text=True, encoding="utf-8", env=env,
-                                        cwd=Path.cwd(), **options)
+        try:
+            self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=None, text=True, encoding="utf-8", env=env,
+                                            cwd=Path.cwd(), **options)
+        except BaseException:
+            self.cache.close()
+            raise
+        self.cache.attach(self.process.pid)
         self.messages = queue.Queue()
         self.closed = False
         threading.Thread(target=self._read, daemon=True).start()
@@ -112,9 +124,13 @@ class Worker:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             # Never kill a worker whose result could be unknown.
-            threading.Thread(target=self.process.wait, daemon=True).start()
+            def reap():
+                self.process.wait()
+                self.cache.close()
+            threading.Thread(target=reap, daemon=True).start()
         if self.process.poll() is not None:
             self.process.stdout.close()
+            self.cache.close()
 
 
 class Supervisor:

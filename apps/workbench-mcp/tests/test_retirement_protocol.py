@@ -36,8 +36,8 @@ class RetirementProtocolTests(unittest.TestCase):
 
     def test_registry_and_dispatch_retire_entire_family(self):
         names = {tool['name'] for tool in TOOLS}
-        for name in ('create_session', 'get_session', 'apply_settings', 'get_preview',
-                     'get_xmp', 'reset', 'get_full_settings', 'round_diff',
+        for name in ('create_session', 'get_session', 'get_preview',
+                     'get_xmp', 'get_full_settings', 'round_diff',
                      'replay_round', 'export_session_context'):
             with self.subTest(name=name):
                 self.assertNotIn('trlr_' + name, names)

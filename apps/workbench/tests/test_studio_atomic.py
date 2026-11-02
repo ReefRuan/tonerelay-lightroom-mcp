@@ -24,6 +24,36 @@ class AtomicEpisodeTests(unittest.TestCase):
         self.path = Path(self.temp.name) / "episode.json"
         self.path.write_text('{"revision": 1}', encoding="utf-8")
 
+    def test_episode_reader_recovers_from_a_transient_windows_replacement(self):
+        studio = mock.Mock()
+        studio.directory.return_value = self.path.parent
+        with mock.patch.object(Path, "read_text", side_effect=[sharing_error(5), '{"intent":"中文"}']) as read, \
+             mock.patch.object(engine.time, "sleep") as sleep:
+            self.assertEqual(engine.Studio.raw(studio, "episode"), {"intent": "中文"})
+        self.assertEqual(read.call_count, 2)
+        read.assert_called_with(encoding="utf-8")
+        sleep.assert_called_once_with(0.01)
+
+    def test_persistent_reader_denial_is_bounded(self):
+        studio = mock.Mock()
+        studio.directory.return_value = self.path.parent
+        with mock.patch.object(Path, "read_text", side_effect=sharing_error()) as read, \
+             mock.patch.object(engine.time, "monotonic", side_effect=[0.0, 0.1, 1.1]), \
+             mock.patch.object(engine.time, "sleep"), self.assertRaises(PermissionError):
+            engine.Studio.raw(studio, "episode")
+        self.assertEqual(read.call_count, 2)
+
+    def test_nonsharing_read_errors_and_invalid_json_are_not_hidden(self):
+        studio = mock.Mock()
+        studio.directory.return_value = self.path.parent
+        for failure in (PermissionError("denied"), json.JSONDecodeError("broken", "", 0)):
+            with self.subTest(error=type(failure).__name__), \
+                 mock.patch.object(Path, "read_text", side_effect=failure) as read, \
+                 mock.patch.object(engine.time, "sleep") as sleep, self.assertRaises(type(failure)):
+                engine.Studio.raw(studio, "episode")
+            read.assert_called_once()
+            sleep.assert_not_called()
+
     def test_transient_windows_denial_retries_the_same_finished_commit(self):
         original = Path.replace
         attempts = []

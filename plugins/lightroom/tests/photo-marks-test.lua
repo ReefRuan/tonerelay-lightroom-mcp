@@ -229,4 +229,13 @@ test('batch reports missing photo while continuing valid explicit UUIDs', functi
     }})).results
     check(rows[1].status=='failed' and rows[2].status=='applied' and writes==1)
 end)
+test('rating-only scoring fills zero stars despite existing flags and labels', function()
+    for _,flag in ipairs({1,-1}) do
+        local p=photo('p',{pickStatus=flag,label='localized-green',colorNameForLabel='green'})
+        local row=set('p',{rating=4},'fill_empty_fields')
+        check(row.status=='applied' and p.metadata.rating==4 and writes>=1)
+        check(p.metadata.pickStatus==flag and p.metadata.label=='localized-green')
+        check(#row.changed_fields==1 and row.changed_fields[1]=='rating')
+    end
+end)
 print('passed ' .. tests .. ' photo marks tests')

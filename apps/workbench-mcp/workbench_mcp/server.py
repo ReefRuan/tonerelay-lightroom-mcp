@@ -40,6 +40,7 @@ from workbench.targets import TargetError  # noqa: E402
 from workbench.configuration_help import CONFIG_TOPICS  # noqa: E402
 
 from workbench_mcp.media_tools import EXPORT_FORMATS, MediaTools  # noqa: E402
+from workbench_mcp.settings_tools import TOOLS as SETTINGS_TOOLS  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "tonerelay-lightroom-mcp", "version": __version__}
@@ -318,13 +319,15 @@ TOOLS = [
     },
     {
         "name": "trlr_get_photo_preview",
-        "description": "Get a read-only requestJpegThumbnail JPEG for an authorized photo; no virtual copy or export. Returns metadata and a bounded native image block. Local image delivery may add a display reference to those exact image bytes. Use that reference and the matching photo's file_name under the Runtime reply-body rules; the tool does not render the assistant's reply. Color/freshness evidence remains in metadata.",
+        "description": "Get read-only requestJpegThumbnail images for one photo_uuid or 1..20 explicit photo_uuids, never both. Batch input preserves order and pins one Target/Catalog; missing thumbnails are reported per UUID, other failures stop the call. No virtual copy, selection change or export. Images remain unverified fast previews. Map UUIDs to names from the photo inventory when presenting a batch.",
         "inputSchema": {
             "type": "object",
-            "required": ["photo_uuid"],
+            "oneOf": [{"required": ["photo_uuid"]}, {"required": ["photo_uuids"]}],
             "additionalProperties": False,
             "properties": {
                 "photo_uuid": {"type": "string", "minLength": 1},
+                "photo_uuids": {"type": "array", "minItems": 1, "maxItems": 20, "uniqueItems": True,
+                                "items": {"type": "string", "minLength": 1}},
                 "size": {"type": "integer", "minimum": 64, "maximum": 2048, "default": 1024},
                 "force": {"type": "boolean", "default": False},
                 "max_edge": {"type": "integer", "minimum": 64, "maximum": 2048, "default": 1024},
@@ -763,6 +766,31 @@ TOOLS.extend([
 ])
 
 
+TOOLS.extend(SETTINGS_TOOLS)
+TOOLS.extend([
+    {"name": "trlr_list_folders",
+     "description": "Read the authorized Lightroom Catalog folder tree without a selected photo or UI changes. Opaque IDs are Catalog-scoped. Omit parent_id to list roots; parent_id lists descendants to depth (default one level); name_contains searches folder names, optionally beneath that parent. Counts include virtual copies and exclude videos; direct and subtree counts must not be added together. This is not a filesystem scan.",
+     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
+         "parent_id": {"type": "string"}, "name_contains": {"type": "string", "maxLength": 256},
+         "depth": {"type": "integer", "minimum": 1, "maximum": 16, "default": 1},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+         "offset": {"type": "integer", "minimum": 0, "default": 0}}}},
+    {"name": "trlr_list_folder_photos",
+     "description": "Capture a fixed photo inventory for explicit Catalog folder_ids and optional descendants, rating and virtual-copy filters. rating=0 includes unrated photos even when they have flags/colors. Returns UUIDs, folder membership, mark summaries and next_cursor. Continue with only cursor and limit: membership/order stay fixed while ratings and UI selection change. Snapshot marks are not write tokens; read fresh trlr_get_photo_marks before writing. Snapshots expire after 24 hours and may be evicted under the bounded query-cache budget. Does not select, render or modify photos.",
+     "inputSchema": {"type": "object", "additionalProperties": False,
+         "oneOf": [{"required": ["folder_ids"]}, {"required": ["cursor"]}], "properties": {
+             "folder_ids": {"type": "array", "minItems": 1, "maxItems": 200, "uniqueItems": True, "items": {"type": "string"}},
+             "include_subfolders": {"type": "boolean"}, "rating": {"type": "integer", "minimum": 0, "maximum": 5},
+             "include_virtual_copies": {"type": "boolean"},
+             "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
+             "cursor": {"type": "string"}}}},
+    {"name": "trlr_get_storage_usage",
+     "description": "Read disk bytes/file counts under configured Runtime cache, previews, conversation media, saved exports, durable edit history and Bridge state roots. No Lightroom access or deletion. Bounded scan reports incomplete categories with bytes=null and observed_bytes as a lower bound. Does not include Lightroom's own previews or legacy caches outside configured roots.",
+     "inputSchema": {"type": "object", "additionalProperties": False, "properties": {
+         "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 30, "default": 5}}}}
+])
+
+
 def _text(text: str) -> dict:
     return {"type": "text", "text": text}
 
@@ -903,6 +931,16 @@ class McpServer:
         snapshot["versions"]["mcp_server"] = __version__
         return _json_content(snapshot)
 
+    def _tool_trlr_list_folders(self, **args):
+        return _json_content(self.wb.catalog_folders.list(**args))
+
+    def _tool_trlr_list_folder_photos(self, **args):
+        return _json_content(self.wb.catalog_folders.photos(**args))
+
+    def _tool_trlr_get_storage_usage(self, budget_seconds=5):
+        from workbench.storage_usage import storage_usage
+        return _json_content(storage_usage(self.wb.store.root, self.wb.presentation.config, budget_seconds))
+
     def _tool_trlr_refresh_mcp(self, action: str = "refresh") -> dict:
         if action not in ("inspect", "refresh"):
             raise ValueError("action must be inspect or refresh")
@@ -947,6 +985,32 @@ class McpServer:
 
     def _tool_trlr_get_current_selection(self) -> dict:
         return _json_content(self.wb.current_selection())
+
+    def _settings_response(self, record, include_preview=True):
+        result = _json_content(record)
+        if include_preview and record.get('preview'):
+            content = self.wb.settings_operations.preview_bytes(record['operation_id'])
+            result['content'].extend(_image_content_bytes(
+                content, self._codex_preview_edge(1024),
+                {'operation_id': record['operation_id'],
+                 'artifact_ref': record['preview']})['content'])
+        return result
+
+    def _tool_trlr_apply_settings(self, photo_uuid, settings, expected_settings_token,
+                                  request_id, render=True):
+        return self._settings_response(self.wb.settings_operations.apply(
+            photo_uuid, settings, expected_settings_token, request_id, render))
+
+    def _tool_trlr_get_settings_operation(self, operation_id, details=False,
+                                         include_preview=False):
+        if type(include_preview) is not bool:
+            raise ValueError('include_preview must be boolean')
+        return self._settings_response(self.wb.settings_operations.get(
+            operation_id, details), include_preview)
+
+    def _tool_trlr_reset(self, operation_id, expected_settings_token, request_id, render=True):
+        return self._settings_response(self.wb.settings_operations.reset(
+            operation_id, expected_settings_token, request_id, render))
 
     def _tool_trlr_update_xmp_sidecar(self, **params) -> dict:
         return _json_content(self.wb.update_xmp_sidecar(**params))
@@ -1026,15 +1090,28 @@ class McpServer:
                 blocks.extend(_image_content(Path(record["preview_path"]), max_edge)["content"])
         return {"content": blocks}
 
-    def _tool_trlr_get_photo_preview(self, photo_uuid: str, size: int = 1024,
-                                     force: bool = False, max_edge: int = 1024) -> dict:
+    def _tool_trlr_get_photo_preview(self, photo_uuid=None, size: int = 1024,
+                                     force: bool = False, max_edge: int = 1024, photo_uuids=None) -> dict:
         max_edge = self._codex_preview_edge(max_edge)
-        if not isinstance(photo_uuid, str) or not photo_uuid:
-            raise ValueError("photo_uuid is required")
         if type(size) is not int or not 64 <= size <= 2048:
             raise ValueError("size must be 64..2048")
         if type(force) is not bool:
             raise ValueError("force must be a boolean")
+        if photo_uuids is not None:
+            if photo_uuid is not None:
+                raise ValueError("provide photo_uuid or photo_uuids, never both")
+            items = self.wb.preview_photos(photo_uuids, size=min(size, max_edge), force=force)
+            blocks = []
+            for item in items:
+                if item["state"] != "ready":
+                    blocks.append(_text(json.dumps(item, ensure_ascii=False)))
+                    continue
+                record = item["record"]
+                metadata = {k: v for k, v in record.items() if k != "preview_path"}
+                blocks.extend(_image_content(Path(record["preview_path"]), max_edge, metadata)["content"])
+            return {"content": blocks}
+        if not isinstance(photo_uuid, str) or not photo_uuid:
+            raise ValueError("photo_uuid is required")
         # ``size`` controls the LR thumbnail request while ``max_edge`` is
         # the image actually returned to Codex.  Never fetch a larger
         # thumbnail only to throw its pixels away in ``_image_content``.

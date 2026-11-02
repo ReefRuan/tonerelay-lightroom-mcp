@@ -392,7 +392,17 @@ class Studio:
         path = self.directory(sid) / 'episode.json'
         if not path.is_file():
             raise ValueError('Episode not found')
-        return json.loads(path.read_text(encoding='utf-8'))
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                return json.loads(path.read_text(encoding='utf-8'))
+            except PermissionError as exc:
+                # A concurrent atomic replacement can briefly deny new readers
+                # on Windows. Retry this read only; never replay an SDK action.
+                if (getattr(exc, 'winerror', None) not in (5, 32, 33)
+                        or time.monotonic() >= deadline):
+                    raise
+                time.sleep(0.01)
 
     def save(self, state):
         state['revision'] += 1
@@ -777,6 +787,8 @@ class Studio:
                          'Episode version snapshot, or XMP replay verification.',
             },
         }
+        from ..settings_operations import settings_token
+        result['settings_token'] = settings_token(photo_uuid, settings, probe, client)
         if format in ('json', 'both'):
             result['settings'] = settings
         if format in ('xmp', 'both'):

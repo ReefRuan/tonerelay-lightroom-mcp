@@ -162,43 +162,7 @@ local function loadCandidates(catalog, query)
     end)
 end
 
-local function numberOrZero(value)
-    if not isFiniteNumber(value) then
-        return 0
-    end
-    return value
-end
-
-local function textOrEmpty(value)
-    if type(value) ~= 'string' then
-        return ''
-    end
-    return value
-end
-
-local function snapshotPhoto(photo)
-    if photo:getRawMetadata('isVideo') == true then
-        return nil
-    end
-
-    local dimensions = photo:getRawMetadata('dimensions')
-    if type(dimensions) ~= 'table' then
-        dimensions = {}
-    end
-
-    local rating = numberOrZero(photo:getRawMetadata('rating'))
-    rating = math.floor(rating)
-
-    return {
-        uuid = textOrEmpty(photo:getRawMetadata('uuid')),
-        file_name = textOrEmpty(photo:getFormattedMetadata('fileName')),
-        copy_name = textOrEmpty(photo:getFormattedMetadata('copyName')),
-        is_virtual_copy = photo:getRawMetadata('isVirtualCopy') == true,
-        width = numberOrZero(dimensions.width),
-        height = numberOrZero(dimensions.height),
-        rating = rating,
-    }
-end
+local snapshotPhoto = (require 'PhotoRecord').snapshot
 
 local function readMetadata(catalog, candidates)
     local records = {}

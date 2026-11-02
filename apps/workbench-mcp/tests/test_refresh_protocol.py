@@ -29,6 +29,8 @@ class RefreshProtocolTests(unittest.TestCase):
         env.pop("TONERELAY_ACTIVE", None)
         env["TONERELAY_BRIDGE_MODE"] = "external"
         env["LR_XMP_MIMIC_RUNTIME_DATA_ROOT"] = str(self.root / "data")
+        env["PYTHONPYCACHEPREFIX"] = str(self.root / "bytecode")
+        env.pop("PYTHONDONTWRITEBYTECODE", None)  # Exercise real bytecode creation and cleanup.
         env["PYTHONPATH"] = os.pathsep.join(str(self.source / p) for p in (
             "apps/workbench-mcp", "apps/workbench", "services/lr-ops"))
         self.process = subprocess.Popen([sys.executable, "-m", "workbench_mcp"],
@@ -93,6 +95,15 @@ class RefreshProtocolTests(unittest.TestCase):
         self.assertEqual(notification["method"], "notifications/tools/list_changed")
         self.assertEqual(self.process.pid, pid)
         self.assertEqual(self.rpc("ping"), {})
+
+    def test_exited_worker_reclaims_its_generation_cache(self):
+        generation_root=self.root / 'bytecode' / 'mcp'
+        self.assertTrue(list(generation_root.iterdir()))
+        self.assertTrue(list(generation_root.rglob('*.pyc')))
+        self.process.stdin.close()
+        self.process.wait(10)
+        self.reader.join(2)
+        self.assertEqual([],list(generation_root.iterdir()))
 
     def test_changed_code_prompt_and_tool_schema_are_loaded(self):
         _, before = self.tool("inspect")

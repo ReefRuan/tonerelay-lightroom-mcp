@@ -125,7 +125,7 @@ class ImageToolsProtocolTests(unittest.TestCase):
         self.assertNotIn("trlr_image_inspect", tools)
         self.assertNotIn("trlr_image_stats", tools)
         preview = tools["trlr_get_photo_preview"]["inputSchema"]
-        self.assertEqual(preview["required"], ["photo_uuid"])
+        self.assertEqual(preview["oneOf"], [{"required": ["photo_uuid"]}, {"required": ["photo_uuids"]}])
         self.assertEqual((preview["properties"]["size"]["minimum"],
                           preview["properties"]["size"]["maximum"]), (64, 2048))
         self.assertFalse(preview["additionalProperties"])

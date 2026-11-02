@@ -67,6 +67,10 @@ Lightroom：已连接；Catalog：已授权（<实际 access mode>）
 
 配置查询不能证明实际路径或文件归属，部署验收按安装维护渠道核对；查看配置不授权迁移、重装或删除源码。
 
+## 存储用量
+
+查询磁盘占用直接使用 `trlr_get_storage_usage`，不要求 Lightroom 连通；区分可重建缓存、对话图片、成品导出、历史产物与 Bridge 状态。只汇报实际完整统计，partial 的 observed_bytes 是下限，不当作总量；旧安装根之外的历史缓存和 Lightroom 自身预览不在此工具覆盖内。查询不授权删除文件，不能把 Episode、操作记录、导出或作业日志当缓存清除。
+
 ## 图片预算
 
 查看大小直接读配置。明确要求修改时，先 `trlr_get_presentation_config`，按用户给定的边长调用 `trlr_set_presentation_config`，再读回；未说明改哪一种时澄清目标，不为一次预览调整全局设置。

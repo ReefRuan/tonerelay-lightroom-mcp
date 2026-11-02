@@ -16,7 +16,7 @@ return {
         major = 0,
         minor = 7,
         revision = 0,
-        build = 1,
+        build = 3,
     },
 
     LrPluginInfoProvider = 'PluginInfoProvider.lua',

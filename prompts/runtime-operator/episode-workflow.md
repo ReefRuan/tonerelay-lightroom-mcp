@@ -1,6 +1,20 @@
 # Episode 主流程
 
-编辑工作使用 Episode。只查询当前照片参数时，先用当前选片或照片列表确定 UUID，再用 `trlr_get_photo_settings` 读取实时完整 Develop 设置；不为只读查询创建编辑上下文。
+需要隔离基准与不可变候选版本时使用 Episode。用户要在某个现有虚拟副本上接着调色时，使用下面的原位精修流程，不为每次小调整另建 Episode 或虚拟副本。只查询当前照片参数时，先用当前选片或照片列表确定 UUID，再用 `trlr_get_photo_settings` 读取实时完整 Develop 设置；不为只读查询创建编辑上下文。
+
+## 现有虚拟副本的连续精修
+
+沿用用户明确指定的照片 UUID；先核对虚拟副本身份，再用 `trlr_get_photo_settings` 取得当前完整设置和新鲜 `settings_token`。通过 `trlr_apply_settings(photo_uuid, settings, expected_settings_token, request_id)` 直接修改同一个副本；该工具不创建副本，也不创建或恢复 Session。普通修图可先用 Episode 创建一个隔离结果，再在用户指定的工作副本上连续精修；比较独立方案时才另建候选。没有可安全编辑的虚拟副本时不改主照片，也不能绕过工具另行直写原片。
+
+每次原位编辑使用本次逻辑动作唯一 request_id 与刚读取的 token。token 绑定完整设置、目标、Catalog 与模式，插件在写门内再次核对捕获状态。只提交明确需要改变的参数，检查返回的实际 applied 值、readback_mismatches 和 unrequested_changes；工具可在同次调用返回受控渲染图片，沿用正文图片交付规则。render=false 不产生渲染证据。
+
+原位修改一个 Episode 已保存版本的副本，会使该副本实时状态不同于历史快照。保存的历史 JPEG 和快照不会被覆盖，不能把它们描述成修改后的实时结果；后续对该旧版本的严格 Episode 操作可能拒绝状态漂移。继续精修仍走原位工具，需冻结新的独立候选时再从当前副本新建 Episode。
+
+`trlr_get_settings_operation` 只读回原操作，details=true 可查看捕获的前后设置，include_preview=true 可回看哈希核对的历史渲染。prepared、dispatching、unknown 均不能重放或换 request_id 再试；旧未知操作会阻止该照片的新原位写入，需要先查明作业结果。
+
+用户明确要求撤销某次原位调整时，使用 `trlr_reset` 指定原 operation_id、新鲜 token 与独立 request_id。它只恢复那次修改过的参数值；后来发生的任何参数变化会使重置拒绝，保护用户后续编辑。它不是 Lightroom 全局 Undo，也不保证恢复 WhiteBalance 模式等派生元数据；字段不存在或原操作未知时不伪造恢复成功。
+
+## 不可变候选版本
 
 1. **定位上下文**：用户给出 Episode 时直接 `trlr_get_episode`；否则用 `trlr_list_episodes` 缩小候选，再读取与照片及意图匹配的完整状态。列表中的 `last_user_message` 是无时间的截断摘要，不是待办标记，不能凭它或排序推断未完成任务。
 2. **新建**：用户已授权开始编辑、且没有应继续的上下文时，用支持过滤和分页的 `trlr_list_photos` 核对来源 UUID，再 `trlr_create_episode`。来源可以是主照片或用户指定的虚拟副本，使用该来源当前显影状态作基准；Episode 为每个版本另建独立虚拟副本，不修改来源。不只凭同名猜 UUID。普通编辑显式用 `mode="source_edit"`；同图仿色须用户确认同一画面，并提供参考 UUID 与 `same_capture=true`，尺寸相同不证明此前提。不使用旧的全量 `trlr_studio_photos` 常规选图。

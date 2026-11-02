@@ -11,6 +11,7 @@ local LrTasks = import 'LrTasks'
 
 local Safety = require 'Safety'
 local Catalog = require 'Catalog'
+local CatalogFolders = require 'CatalogFolders'
 local Json = require 'Json'
 local Presets = require 'Presets'
 local PhotoMarks = require 'PhotoMarks'
@@ -26,6 +27,8 @@ local PLUGIN_VERSION = string.format('%d.%d.%d', PluginVersion.major, PluginVers
 local Commands = {}
 
 Commands.get_photo_marks = PhotoMarks.get
+Commands.list_catalog_folders = CatalogFolders.list
+Commands.list_folder_photos = CatalogFolders.photos
 Commands.set_photo_marks = PhotoMarks.set
 Commands.restore_photo_marks = PhotoMarks.restore
 Commands.update_xmp_sidecar = Sidecar.prepare
@@ -179,7 +182,7 @@ function Commands.probe_client(_)
         return {
             lr_version = LrApplication.versionString(),
             plugin_version = PLUGIN_VERSION,
-            build_id = 'poll-lifecycle-0.7.0-1',
+            build_id = 'poll-lifecycle-0.7.0-3',
             catalog_open = false,
             access_mode = Safety.getAccessMode(),
             catalog_authorized = false,
@@ -194,12 +197,13 @@ function Commands.probe_client(_)
     return {
         lr_version = LrApplication.versionString(),
         plugin_version = PLUGIN_VERSION,
-        build_id = 'poll-lifecycle-0.7.0-1',
+        build_id = 'poll-lifecycle-0.7.0-3',
         catalog_open = true,
         capabilities = { expected_catalog_identity = true, expected_access_mode = true,
             catalog_identity = true, develop_snapshot = true,
+            in_place_settings_v1 = true,
             develop_presets_read = true, hsl = true, white_balance = true, curves = true,
-            catalog_search = true, current_folder_selection = true, photo_marks_v1 = true,
+            catalog_search = true, catalog_folders_v1 = true, current_folder_selection = true, photo_marks_v1 = true,
             sidecar_context_v1 = true,
             preview_fast_request_jpeg_thumbnail = true,
             preview_fast_thumbnail_unavailable_code = true,
@@ -658,10 +662,29 @@ function Commands.native_mask(params)
     return NativeMasks.run(params, prepareVirtualCopySelection)
 end
 
+local function sameSettings(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= 'table' then return a == b end
+    for key, value in pairs(a) do
+        if not sameSettings(value, b[key]) then return false end
+    end
+    for key in pairs(b) do if a[key] == nil then return false end end
+    return true
+end
+
 local function applyCandidateCore(params)
     local photo = findPhoto(params.photo_uuid)
     if not photo:getRawMetadata('isVirtualCopy') then
         error('apply_candidate only writes to virtual copies; refusing to touch a master photo.')
+    end
+    if params.require_in_place_guard then
+        if type(params.expected_settings_snapshot) ~= 'table' then
+            error('In-place edits require a captured settings snapshot.')
+        end
+        if not sameSettings(photo:getDevelopSettings() or {}, params.expected_settings_snapshot) then
+            return { photo = photoInfo(photo), status = 'conflict',
+                     code = 'settings_changed', applied = false }
+        end
     end
     local settings = params.settings
     if type(settings) ~= 'table' then
@@ -990,6 +1013,8 @@ Commands._cores = {
     get_current_folder = Commands.get_current_folder,
     list_photos = Commands.list_photos,
     search_photos = Commands.search_photos,
+    list_catalog_folders = Commands.list_catalog_folders,
+    list_folder_photos = Commands.list_folder_photos,
     capture_baseline = Commands.capture_baseline,
     get_develop_state = Commands.get_develop_state,
     get_develop_snapshot = Commands.get_develop_snapshot,

@@ -163,7 +163,8 @@ class PreviewProtocolTests(unittest.TestCase):
         tools = {tool["name"]: tool for tool in self.server.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]}
         schema = tools["trlr_get_photo_preview"]["inputSchema"]
-        self.assertEqual(schema["required"], ["photo_uuid"])
+        self.assertEqual(schema["oneOf"], [{"required": ["photo_uuid"]}, {"required": ["photo_uuids"]}])
+        self.assertEqual(schema["properties"]["photo_uuids"]["maxItems"], 20)
         self.assertIs(schema["additionalProperties"], False)
         self.assertEqual(schema["properties"]["size"]["default"], 1024)
         self.assertEqual((schema["properties"]["size"]["minimum"],

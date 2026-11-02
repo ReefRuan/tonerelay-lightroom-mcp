@@ -1,5 +1,7 @@
 # 安全不变量
 
+用户指定的现有虚拟副本可通过原位参数工具持续精修；主照片仍拒绝写入。原位参数操作与 Episode 的不可变版本是不同执行语义，不能覆盖历史快照或将修改后的副本冒充原版本。Session 工具和旧裸 JSON store 不恢复。
+
 ## Catalog 身份与授权
 
 访问模式只有 `safe` / `full`，Agent 不通过工具参数提升或改变模式。`safe` 仅允许已登记 Sandbox；`full` 仅取消 Sandbox 位置限制，仍需 Catalog 身份绑定与授权。两种模式都可能写 Catalog，`safe` 不是只读模式。

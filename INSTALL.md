@@ -16,7 +16,7 @@
 | 完整安装提示词（本仓副本） | [INSTALL-PROMPT.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.md) | [INSTALL-PROMPT.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/INSTALL-PROMPT.md) |
 | FAQ 与 Windows 排障（本仓副本） | [FAQ.md](https://github.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.md) | [FAQ.md](https://gitee.com/ReefRuan/tonerelay-lightroom-mcp/blob/main/FAQ.md) |
 
-希望由 Agent 完成安装时，复制 [README 的短提示词](README.md#一键安装)。它只带 MCP 的 GitHub／Gitee 两个入口：先只读检查已有安装；需要源码时固定完整提交，在 ToneRelay 专用安装目录取得完整快照，再完整阅读本地 [INSTALL-PROMPT.md](INSTALL-PROMPT.md)、[FAQ.md](FAQ.md) 和本页。健康兼容的已有安装只新增客户端，不为读取文档而重装或顺便升级。取得这份源码后不依赖 Portal 在线；Portal 是网页与文档维护源，不能用它的 checkout 代替 MCP 源码。
+希望由 Agent 完成安装或更新时，复制 [README 的短提示词](README.md#一键安装)。先只读检查已有安装；需要源码时固定完整提交，在 ToneRelay 专用安装目录取得完整快照，再完整阅读本地 [INSTALL-PROMPT.md](INSTALL-PROMPT.md)、[FAQ.md](FAQ.md) 和本页。复制提示词指定了更新目标时，旧安装即使健康也更新到该固定目标；相同版本和 commit 且健康时只核验，只有明确要求“只接入客户端／不升级”时才复用旧版。保留数据、绑定、模式、其他客户端及本地修改，先准备目标并记录回退入口，再切换。取得这份源码后不依赖 Portal 在线；Portal 是网页与文档维护源，不能用它的 checkout 代替 MCP 源码。
 
 安装提示词与 FAQ 的中英文副本均来自 Portal 的公开文档，[INSTALL-CONTEXT.json](INSTALL-CONTEXT.json)记录其固定来源提交、逐文件路径和 SHA-256；该清单用于检查文档副本一致性，不是安装工件签名，也不单独证明远端来源可信。维护时先更新 Portal，再同步四份文档与清单；不从内部开发资料复制安装说明。旧标签可能不包含这些文件：不要移动已有标签，也不要从缺少文档的旧快照假装读取成功。
 
@@ -88,6 +88,8 @@ $ToneRelayControl = "C:\path\from-install-output\tonerelay.cmd"
 安装完整客户端 Plugin 时应包含 `skills/`。仅手动添加 MCP 时，还需要按 [客户端 Skill 安装步骤](plugins/tonerelay-lightroom/skills/tonerelay-lightroom/references/installation.md#deliver-the-startup-skill-to-each-client) 安装同一份启动 Skill。仓库附带的 MCP Plugin 入口面向 macOS；Windows 使用安装器返回的配置。
 
 将 `mcp_server` 按目标客户端的官方入口合并，保留其它服务；bootstrap 不会自动把配置和 Skill 安装进每个客户端。MCP 由客户端启动，不要另起一个脱离客户端的 stdio 常驻进程。
+
+MCP 可见并可调用即可，不强制安装完整客户端 Plugin。Codex 在“设置 → MCP 服务器”查看和重启 `tonerelay-lightroom`；更新后核对重连会话实际发现的工具。只有工具清单仍缓存时再新开会话，不能把 Runtime worker 刷新当作客户端已经重连。目录查询与存储统计只读验收不修改照片。
 
 ### 登记每个客户端（macOS）
 

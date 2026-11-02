@@ -49,4 +49,18 @@ assert(photo.settings.IncrementalTemperature == 12 and photo.settings.Incrementa
 photo.virtual = false
 assert(not pcall(Commands.apply_candidate, { photo_uuid = 'copy', settings = { Exposure2012 = 1 } }),
     'the existing master protection must remain enforced')
+photo.virtual = true
+photo.settings = clone(initial)
+local expected = clone(initial)
+photo.settings.Exposure2012 = 0.7
+local rejected = Commands.apply_candidate { photo_uuid = 'copy',
+    settings = { Exposure2012 = 1 }, require_in_place_guard = true,
+    expected_settings_snapshot = expected }
+assert(rejected.status == 'conflict' and rejected.applied == false,
+    'stale snapshot must be rejected inside the write gate without an unknown write')
+assert(photo.settings.Exposure2012 == 0.7, 'stale edits must not overwrite later user changes')
+expected = clone(photo.settings)
+Commands.apply_candidate { photo_uuid = 'copy', settings = { Exposure2012 = 0.8 },
+    require_in_place_guard = true, expected_settings_snapshot = expected }
+assert(photo.settings.Exposure2012 == 0.8, 'fresh snapshot must edit the same virtual copy')
 print('white-balance-patch-test: passed')

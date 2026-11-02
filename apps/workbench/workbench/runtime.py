@@ -24,6 +24,7 @@ from .preview import PreviewStore
 from .issues import IssueStore
 from .presentation import PresentationSettings
 from .selection import SelectionTools
+from .catalog_folders import CatalogFolders
 from .catalog_discovery import catalog_identity_for_path, discover_catalogs
 from .catalog_switch import (CatalogSwitchError, is_supported_host,
                              open_catalog_file)
@@ -118,6 +119,8 @@ class Workbench:
         self._preset_tools = None
         self._catalog_tools = None
         self._photo_marks = None
+        self._settings_operations = None
+        self._catalog_folders = None
         self._previews = PreviewStore(self.store.root)
         self.presentation = PresentationSettings(self.store.root)
         self.issues = IssueStore(self.store.root / "issues.jsonl")
@@ -170,6 +173,13 @@ class Workbench:
             self._photo_marks = PhotoMarks(self.store.root, self._mark_connection)
         return self._photo_marks
 
+    @property
+    def settings_operations(self):
+        if self._settings_operations is None:
+            from .settings_operations import SettingsOperations
+            self._settings_operations = SettingsOperations(self)
+        return self._settings_operations
+
     def _mark_connection(self):
         from .studio.engine import Studio
         client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
@@ -180,6 +190,43 @@ class Workbench:
         """A lazy, target-pinned client for one compound Catalog operation."""
         client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
         return CatalogBoundClient(self.store.root, client)
+
+    def _folder_connection(self):
+        from .studio.engine import Studio
+        client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
+        studio = Studio(self.store.root, client)
+        probe = studio.probe()
+        if probe.get("capabilities", {}).get("catalog_folders_v1") is not True:
+            raise LrOpsError("Lightroom plugin lacks catalog_folders_v1; load the matching plugin build")
+        scope = preview_source(client, "folder-query", probe)
+        scope["access_mode"] = probe.get("access_mode")
+        return (lambda command, args: studio.run(command, args, catalog_identity=probe["catalog_identity"])), scope
+
+    @property
+    def catalog_folders(self):
+        if self._catalog_folders is None:
+            self._catalog_folders = CatalogFolders(self.store.root, self._folder_connection)
+        return self._catalog_folders
+
+    def preview_photos(self, photo_uuids, size=512, force=False):
+        if (not isinstance(photo_uuids, list) or not 1 <= len(photo_uuids) <= 20
+                or any(not isinstance(p, str) or not p for p in photo_uuids)
+                or len(set(photo_uuids)) != len(photo_uuids)):
+            raise ValueError("provide 1..20 distinct photo UUIDs")
+        for item in photo_uuids:
+            self._validate_preview_request(item, size=size, force=force)
+        client = self.lrops.pin() if hasattr(self.lrops, "pin") else self.lrops
+        from .studio.engine import Studio
+        studio = Studio(self.store.root, client)
+        probe = studio.probe()
+        items = []
+        for item in photo_uuids:
+            try:
+                record = self._preview_photo_on_client(client, studio, probe, item, size=size, force=force)
+                items.append({"photo_uuid": item, "state": "ready", "record": record})
+            except FastThumbnailUnavailable:
+                items.append({"photo_uuid": item, "state": "unavailable", "reason": "fast_thumbnail_unavailable"})
+        return items
 
     def health(self) -> dict:
         """Report transport health and the current read-only Catalog policy.

@@ -553,7 +553,7 @@ end)
 test('probe advertises Catalog search and keeps every previous capability', function()
   usePhotos(defaultPhotos())
   local probe = Commands.probe_client({})
-  check(probe.build_id == 'poll-lifecycle-0.7.0-1',
+  check(probe.build_id == 'poll-lifecycle-0.7.0-3',
     'build_id: ' .. tostring(probe.build_id))
   check(probe.capabilities.catalog_search == true, 'catalog_search capability')
   check(probe.capabilities.expected_catalog_path == nil, 'path binding capability is retired')
@@ -561,6 +561,7 @@ test('probe advertises Catalog search and keeps every previous capability', func
   check(probe.capabilities.expected_access_mode == true, 'expected_access_mode capability')
   check(probe.capabilities.catalog_identity == true, 'catalog_identity capability')
   check(probe.capabilities.develop_snapshot == true, 'develop_snapshot capability')
+  check(probe.capabilities.in_place_settings_v1 == true, 'guarded in-place settings capability')
   check(probe.capabilities.develop_presets_read == true, 'develop_presets_read capability')
   check(probe.capabilities.hsl == true and probe.capabilities.white_balance == true
     and probe.capabilities.curves == true, 'develop capabilities preserved')

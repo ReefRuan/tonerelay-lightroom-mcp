@@ -119,11 +119,12 @@ class CatalogProtocolTests(unittest.TestCase):
         self.assertEqual(schema["properties"]["rating"]["minimum"], 0)
         self.assertEqual(schema["properties"]["rating"]["maximum"], 5)
         self.assertIn("unrated", schema["properties"]["rating"]["description"])
-        # The listing tool keeps its name; no second, synonymous photo tool.
+        # Global live search keeps its name; folder snapshots are a distinct scope contract.
         photo_tools = sorted(name for name in tools if "photo" in name)
         self.assertEqual(photo_tools, ["trlr_get_photo_marks", "trlr_get_photo_preview",
                                        "trlr_get_photo_settings",
                                        "trlr_import_photos",
+                                        "trlr_list_folder_photos",
                                        "trlr_list_photos", "trlr_set_photo_marks",
                                        "trlr_studio_photos", "trlr_undo_photo_marks",
                                        "trlr_upload_photo"])

@@ -102,6 +102,34 @@ delivers this skill with the MCP configuration. Verify that the MCP entry suits
 the platform: this repository's bundled `.mcp.json` uses the macOS launcher.
 Do not install that launcher entry unchanged on Windows.
 
+For a complete Windows Plugin, after installing Runtime, prepare a dedicated
+local marketplace with Python 3.11+ from the verified Plugin directory:
+
+```text
+python scripts/tonerelay_codex_plugin.py --runtime-root <runtime-root> --destination <dedicated-marketplace-root>
+codex plugin marketplace add <dedicated-marketplace-root> --json
+codex plugin add tonerelay-lightroom@tonerelay-local --json
+```
+
+Use the actual client's supported Codex CLI (`plugin --help`), or the official
+Plugins interface to install from that marketplace. The preparer generates the
+Windows stdio entry and packages the complete skill and recovery scripts. It
+does not install the Plugin itself. Repeat preparation is idempotent; updates
+back up the previous owned source and refuse local modifications. Reinstall
+through the official client flow to update the installed copy; never edit its
+cache. This local preparation is not marketplace publication.
+
+When migrating a direct MCP installation, add
+`--reuse-client-config <actual-codex-config.toml>` to preserve its exact ToneRelay
+command and environment. Keep that working connection until the official
+installation succeeds and its installed package is verified. Then back up and
+disable only the superseded direct MCP entry, and move the unchanged owned
+standalone skill to a backup outside skill discovery. Preserve local edits and
+other servers. Restart/reconnect the actual client and verify the Plugin's MCP
+and skill discovery; a successful CLI installation or a card alone does not
+prove connection. A direct MCP plus standalone skill has no installed Plugin
+card; report these integration types separately.
+
 For an existing direct MCP installation, keep its working entry and install only
 the shared skill directory at `~/.agents/skills/tonerelay-lightroom/` (user scope),
 or `<project>/.agents/skills/tonerelay-lightroom/` (project scope). Avoid installing
