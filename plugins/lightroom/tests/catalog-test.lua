@@ -582,7 +582,7 @@ test('probe advertises Catalog search and keeps every previous capability', func
     and probe.catalog_identity == Safety.catalogIdentity(sandboxCatalogPath)
     and probe.access_mode == 'full' and probe.sandbox == false, 'catalog and access probe fields')
   local v = (require 'Info').VERSION
-  check(probe.plugin_version == string.format('%d.%d.%d', v.major, v.minor, v.revision)
+  check(probe.plugin_version == string.format('%d.%d.%d.%d', v.major, v.minor, v.revision, v.build)
     and probe.lr_version == '15.4.1', 'version fields preserved')
   check(probe.capabilities.ui_context_restore_v1 == true, 'UI-context restoration capability')
 end)
