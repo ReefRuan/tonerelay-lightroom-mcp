@@ -6,9 +6,9 @@ local manifest = assert(dofile(plugin .. '/Info.lua'))
 assert(manifest.LrInitPlugin == 'AutoStart.lua', 'LrInitPlugin must point to AutoStart.lua')
 assert(manifest.LrShutdownPlugin == 'Shutdown.lua', 'plugin shutdown must retire the polling generation')
 assert(manifest.LrForceInitPlugin == true, 'LrForceInitPlugin must force startup initialization')
-assert(manifest.VERSION.major == 0 and manifest.VERSION.minor == 7
-  and manifest.VERSION.revision == 0, 'plug-in manifest version must match the 0.7.0 Runtime')
-assert(manifest.VERSION.build == 3, 'plug-in build must identify Catalog folder queries and guarded editing')
+assert(manifest.VERSION.major == 0 and manifest.VERSION.minor == 8
+  and manifest.VERSION.revision == 0, 'plug-in manifest version must match the 0.8.0.0 Runtime')
+assert(manifest.VERSION.build == 0, 'plug-in build must identify the 0.8.0.0 release')
 assert(type(manifest.LrLibraryMenuItems) == 'table' and #manifest.LrLibraryMenuItems > 0,
   'plugin must expose at least one Library menu item')
 assert(type(manifest.LrExportMenuItems) == 'table', 'plugin must expose File > Plug-in Extras recovery')

@@ -14,6 +14,8 @@ TOOLS = [
     tool('trlr_apply_settings',
          'Apply an explicit develop patch directly to one existing virtual copy by photo_uuid. '
          'Creates NO virtual copy and NO Session. Repeated edits keep the same UUID. '
+         'Default for continuing an ordinary edit on the established working copy. '
+         'Protected copy names are refused and the token also binds the copy name. '
          'Requires a fresh settings_token from trlr_get_photo_settings and a unique request_id. '
          'The token binds full settings, photo, Target, Catalog and access mode. '
          'The plugin checks the captured state inside its Catalog write gate; masters are refused. '

@@ -108,7 +108,8 @@ class PreviewProtocolTests(unittest.TestCase):
         self.bridge.dimensions = (1512, 1008)
         with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
             payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview",
-                                            {"photo_uuid": "photo-1", "max_edge": 1024}))
+                                            {"photo_uuid": "photo-1", "max_edge": 1024,
+                                             "display": True}))
         displays = self.displays(payload)
         self.assertEqual(len(displays), 1, "missing usable reply-body image reference")
         reference = displays[0]
@@ -125,10 +126,10 @@ class PreviewProtocolTests(unittest.TestCase):
             normal = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
         self.assertEqual(self.displays(normal), [])
         with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
-            first = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+            first = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1", "display": True}))
             path = Path(self.displays(first)[0]["path"])
             modified = path.stat().st_mtime_ns
-            again = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+            again = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1", "display": True}))
         self.assertEqual(self.displays(first), self.displays(again))
         self.assertEqual(path.stat().st_mtime_ns, modified)
         native = lambda payload: [block for block in payload["content"] if block["type"] == "image"]
@@ -136,11 +137,13 @@ class PreviewProtocolTests(unittest.TestCase):
         self.assertEqual(native(first), native(again))
         self.assertEqual(path.read_bytes(), base64.b64decode(native(first)[0]["data"]))
         self.assertEqual(sum(name == "request_jpeg_thumbnail" for name, _ in self.bridge.calls), 1)
+        self.assertTrue(all("display" not in params for _, params in self.bridge.calls),
+                        "display is a delivery option and must not reach Lightroom")
 
-    def test_local_delivery_is_default_and_only_explicit_zero_disables_it(self):
+    def test_local_delivery_requires_explicit_display_and_zero_disables_it(self):
         native = lambda payload: [block for block in payload["content"] if block["type"] == "image"]
         with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "0"}):
-            disabled = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+            disabled = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1", "display": True}))
         self.assertEqual(self.displays(disabled), [])
         self.assertFalse((self.workbench.store.root / "image-delivery").exists())
         for value in (None, "1"):
@@ -149,7 +152,7 @@ class PreviewProtocolTests(unittest.TestCase):
                     server_module.os.environ.pop("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES", None)
                 else:
                     server_module.os.environ["LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES"] = value
-                payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1"}))
+                payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview", {"photo_uuid": "photo-1", "display": True}))
             self.assertEqual(native(payload), native(disabled))
             references = self.displays(payload)
             self.assertEqual(len(references), 1)
@@ -159,6 +162,23 @@ class PreviewProtocolTests(unittest.TestCase):
                              base64.b64decode(native(payload)[0]["data"]))
         self.assertEqual(sum(name == "request_jpeg_thumbnail" for name, _ in self.bridge.calls), 1)
 
+    def test_default_keeps_native_image_without_creating_delivery_files(self):
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
+            payload = tool_payload(call_tool(self.server, "trlr_get_photo_preview",
+                                            {"photo_uuid": "photo-1"}))
+        self.assertTrue(any(block["type"] == "image" for block in payload["content"]))
+        self.assertEqual(self.displays(payload), [])
+        self.assertFalse((self.workbench.store.root / "image-delivery").exists())
+
+    def test_invalid_display_is_rejected_before_lightroom_call(self):
+        for value in (None, 0, 1, "true"):
+            with self.subTest(value=value):
+                response = call_tool(self.server, "trlr_get_photo_preview",
+                                     {"photo_uuid": "photo-1", "display": value})
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn("display must be boolean", error_text(response))
+        self.assertEqual(self.bridge.calls, [])
+
     def test_schema_pins_the_arguments_the_handler_validates(self):
         tools = {tool["name"]: tool for tool in self.server.handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})["result"]["tools"]}
@@ -166,6 +186,8 @@ class PreviewProtocolTests(unittest.TestCase):
         self.assertEqual(schema["oneOf"], [{"required": ["photo_uuid"]}, {"required": ["photo_uuids"]}])
         self.assertEqual(schema["properties"]["photo_uuids"]["maxItems"], 20)
         self.assertIs(schema["additionalProperties"], False)
+        self.assertEqual(schema["properties"]["display"]["type"], "boolean")
+        self.assertIs(schema["properties"]["display"]["default"], False)
         self.assertEqual(schema["properties"]["size"]["default"], 1024)
         self.assertEqual((schema["properties"]["size"]["minimum"],
                           schema["properties"]["size"]["maximum"]), (64, 2048))
@@ -180,6 +202,7 @@ class PreviewProtocolTests(unittest.TestCase):
             {"photo_uuid": "photo-1", "size": 2049},
             {"photo_uuid": "photo-1", "force": "false"},
             {"photo_uuid": "photo-1", "force": 1},
+            {"photo_uuid": "photo-1", "display": "true"},
             {"photo_uuid": "photo-1", "max_edge": True},
             {"photo_uuid": "photo-1", "max_edge": 63},
             {"photo_uuid": "photo-1", "max_edge": 4096},
@@ -196,7 +219,7 @@ class PreviewProtocolTests(unittest.TestCase):
     def test_render_then_cache_returns_the_same_artifact(self):
         rendered = tool_payload(call_tool(self.server, "trlr_get_photo_preview",
                                           {"photo_uuid": "photo-1", "size": 640,
-                                           "max_edge": 64}))
+                                           "max_edge": 64, "display": True}))
         self.assertEqual(len(rendered["content"]), 3)
         self.assertEqual(self.displays(rendered)[0]["kind"], "local_file")
         self.assertEqual(rendered["content"][2]["type"], "image")
@@ -208,7 +231,7 @@ class PreviewProtocolTests(unittest.TestCase):
 
         cached = payload_metadata(call_tool(self.server, "trlr_get_photo_preview",
                                             {"photo_uuid": "photo-1", "size": 640,
-                                             "max_edge": 64}))
+                                             "max_edge": 64, "display": True}))
         self.assertTrue(cached["cached"])
         self.assertEqual(cached["freshness"], "cached_unverified")
         for field in ("key", "actual_size", "bytes", "orientation", "method",

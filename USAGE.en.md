@@ -18,6 +18,16 @@ You can continue browsing the folder in batches on the next page. The current ph
 
 After reviewing the result, point out specific areas and impressions, such as “the person is still a little dark,” “the sky is too cyan,” or “the shadows are too flat now.” You can also ask to see an existing version or return to an earlier version you liked.
 
+Ordinary editing creates one working copy and continues on that same copy. Ask
+to save a separate candidate when you want another independent version. Mark a
+copy name with protected, locked, readonly, read-only or do-not-edit to prevent
+ToneRelay from overwriting it; read-only inspection remains available.
+
+Conversational viewing and final results still include pictures. Internal
+iterations, batch inspection and scoring do not additionally save conversation
+display files. Lightroom controlled renders and history retain their existing
+storage behavior.
+
 ## Color-grade using a reference image
 
 Send a reference image in the conversation, then describe the features that matter most:

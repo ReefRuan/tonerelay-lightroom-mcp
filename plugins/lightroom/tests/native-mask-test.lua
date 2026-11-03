@@ -8,12 +8,15 @@ local initial = {Exposure2012=.32, Temperature=4050, Tint=6, WhiteBalance='As Sh
     MaskGroupBasedCorrections={{CorrectionSyncID='existing', CorrectionName='Keep me', CorrectionActive=true,
         LocalExposure2012=0, CorrectionMasks={{What='Mask/Image', MaskID='old', MaskDigest='old-digest', WholeImageArea='0,0,1,1'}}}}}
 local photo = {settings=clone(initial), virtual=true}
+photo.copyName = 'TRLR'
 function photo:getDevelopSettings() return clone(self.settings) end
+function photo:getFormattedMetadata(key) if key == 'copyName' then return self.copyName end end
 function photo:getRawMetadata(key) if key == 'uuid' then return 'copy' elseif key == 'isVirtualCopy' then return self.virtual end end
 function photo:applyDevelopSettings(settings)
     for k, value in pairs(settings) do self.settings[k] = clone(value) end
 end
 local selected, module, calls, pending, ticks, interfere, failCreate, generate = photo, 'library', 0, false, 0, false, false, true
+local renameOnSleep = false
 local cat = {}
 function cat:getPath() return '/catalog.lrcat' end
 function cat:findPhotoByUuid(id) if id == 'copy' then return photo end end
@@ -41,6 +44,7 @@ import = function(name)
     if name == 'LrMD5' then return {digest=function(s) local n=0;for i=1,#s do n=(n*31+s:byte(i))%2147483647 end;return string.format('%032x',n) end} end
     if name == 'LrTasks' then return {pcall=pcall,sleep=function()
         if interfere then selected={} end
+        if renameOnSleep then photo.copyName='renamed during write';renameOnSleep=false end
         if pending and generate then
             ticks=ticks+1
             if ticks == 2 then
@@ -64,6 +68,8 @@ local function args(action)
         expected_catalog_identity=Safety.catalogIdentity(cat:getPath()), request_id='test',
         expected_token=Masks.run({photo_uuid='copy'}, function() end).expected_token}
 end
+local inspected = Masks.run({photo_uuid='copy'}, function() end)
+assert(inspected.status == 'inspected' and inspected.copy_name == 'TRLR' and not inspected.edit_protected)
 local p=args('create');p.name='SDK Subject';p.settings={LocalExposure2012=.1}
 local result=Masks.run(p,function() selected=photo end)
 assert(result.status == 'created' and result.catalog_applied and result.segmentation_data_present)
@@ -92,4 +98,12 @@ assert(result.status == 'failed' and result.failure_phase == 'create_requested' 
 failCreate=false
 photo.settings.MaskGroupBasedCorrections[1].CorrectionMasks[1].MaskDigest=nil
 assert(Masks.run(args('recompute'),function() selected=photo end).status == 'applied')
+photo.copyName='归档-勿改'
+inspected=Masks.run({photo_uuid='copy'},function() end)
+assert(inspected.status == 'inspected' and inspected.edit_protected)
+assert(not pcall(Masks.run,args('create'),function() selected=photo end), 'protected copy writes must fail')
+photo.copyName='TRLR'
+renameOnSleep=true
+result=Masks.run(args('create'),function() selected=photo end)
+assert(result.status == 'failed' and calls == 3, 'rename in the write flow must block before SDK mutation')
 print('native-mask-test: passed')

@@ -118,6 +118,16 @@ class CatalogTools:
         # Rebuild with exactly the contract fields: a raw path or develop
         # snapshot must never ride along to external clients.
         clean = {key: photo[key] for key in PHOTO_FIELDS}
+        # Identity linkage and conservative name protection are public metadata.
+        # Keep them optional for inventories captured by an older plugin.
+        if 'master_uuid' in photo:
+            if not isinstance(photo['master_uuid'], str) or not photo['master_uuid']:
+                raise ValueError("Lightroom master_uuid must be a non-empty string")
+            clean['master_uuid'] = photo['master_uuid']
+        if 'edit_protected' in photo:
+            if type(photo['edit_protected']) is not bool:
+                raise ValueError("Lightroom edit_protected must be a boolean")
+            clean['edit_protected'] = photo['edit_protected']
         if not isinstance(clean["uuid"], str) or not clean["uuid"]:
             raise ValueError("Lightroom photo uuid must be a non-empty string")
         if not isinstance(clean["file_name"], str):

@@ -791,6 +791,46 @@ TOOLS.extend([
 ])
 
 
+# Display files are a client compatibility feature, not part of model vision.
+# Keep this option outside edit payloads so changing delivery never replays writes.
+IMAGE_RESPONSE_TOOLS = frozenset({
+    "trlr_apply_settings", "trlr_reset", "trlr_get_settings_operation",
+    "trlr_get_photo_preview", "trlr_get_current_folder_previews",
+    "trlr_episode_artifact", "trlr_folder_preview", "trlr_image_compare",
+    "trlr_color_region_compare",
+})
+WORKING_COPY_ROUTING = {
+    "trlr_create_episode": " For ordinary first-time editing, create only the v0 copy "
+        "and continue on versions[0].photo_uuid with trlr_apply_settings. "
+        "Do not immediately create another candidate with trlr_edit_episode.",
+    "trlr_edit_episode": " Every call CREATES ANOTHER virtual copy. Use only for an "
+        "explicit independent immutable candidate, not routine corrections or a style "
+        "change on the existing working copy; use trlr_apply_settings for those.",
+    "trlr_get_episode": " This is historical context for Episode operations, not a "
+        "prerequisite for every in-place edit. Live work uses trlr_get_photo_settings.",
+    "trlr_get_photo_settings": " Returns current photo metadata including copy_name "
+        "and, with the matching plugin, master_uuid/edit_protected. settings_token "
+        "binds the live copy name as well as Develop settings.",
+    "trlr_parameter_reference": " Also use these parameter contracts for "
+        "trlr_apply_settings; a reference lookup does not require an Episode.",
+    "trlr_native_mask": " Reuse the established working copy; do not clone to enter "
+        "masking. Name-protected copies refuse writes, while inspect stays available.",
+}
+for _tool in TOOLS:
+    _tool["description"] += WORKING_COPY_ROUTING.get(_tool["name"], "")
+    if _tool["name"] in IMAGE_RESPONSE_TOOLS:
+        _tool["inputSchema"]["properties"]["display"] = {
+            "type": "boolean", "default": False,
+            "description": "Request local image references for conversational viewing or final delivery. "
+                           "Default false returns native image blocks without image-delivery files. "
+                           "Respects the client's local-image opt-out; not an edit or render option.",
+        }
+        _tool["description"] += (
+            " Image blocks are always available when this tool returns an image. "
+            "Use display=true for ordinary conversational viewing and final result delivery; internal inspection "
+            "defaults to display=false and never writes image-delivery.")
+
+
 def _text(text: str) -> dict:
     return {"type": "text", "text": text}
 
@@ -892,8 +932,14 @@ class McpServer:
         if handler is None:
             raise StoreError(f"unknown tool {name}")
         try:
-            result = handler(**(args or {}))
-            if (os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES") != "0"
+            params = dict(args or {})
+            display = False
+            if name in IMAGE_RESPONSE_TOOLS:
+                display = params.pop("display", False)
+                if type(display) is not bool:
+                    raise ValueError("display must be boolean")
+            result = handler(**params)
+            if (display and os.environ.get("LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES") != "0"
                     and any(block.get("type") == "image"
                             for block in result.get("content", []))):
                 result = add_local_image_references(

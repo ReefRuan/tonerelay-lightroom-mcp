@@ -10,6 +10,7 @@ from pathlib import Path
 from .artifacts import build_artifact_ref, MAX_BYTES
 from .studio.engine import Studio, Conflict, fingerprint, same_value, valid_id
 from .studio.settings import validate, WB_KEYS
+from .copy_policy import require_editable_copy
 
 
 def settings_scope(photo_uuid, probe, client):
@@ -19,9 +20,9 @@ def settings_scope(photo_uuid, probe, client):
             'endpoint_fingerprint': fingerprint(str(getattr(client, 'base', '')))}
 
 
-def settings_token(photo_uuid, settings, probe, client):
+def settings_token(photo_uuid, settings, probe, client, copy_name=''):
     return fingerprint({'scope': settings_scope(photo_uuid, probe, client),
-                        'settings': settings})
+                        'settings': settings, 'copy_name': copy_name})
 
 
 class SettingsOperations:
@@ -118,14 +119,20 @@ class SettingsOperations:
                            (record['operation_id'],))
 
     @staticmethod
-    def _snapshot(reader, photo_uuid, identity):
+    def _capture(reader, photo_uuid, identity, *, check_protection=True):
         snapshot = reader.snapshot(photo_uuid, identity)
         if (not isinstance(snapshot, dict) or not isinstance(snapshot.get('photo'), dict)
                 or snapshot['photo'].get('uuid') != photo_uuid
                 or snapshot['photo'].get('is_virtual_copy') is not True
                 or not isinstance(snapshot.get('settings'), dict)):
             raise ValueError('In-place edits require the exact existing virtual copy; masters refused')
-        return snapshot['settings']
+        if check_protection:
+            require_editable_copy(snapshot['photo'])
+        return snapshot
+
+    @staticmethod
+    def _snapshot(reader, photo_uuid, identity):
+        return SettingsOperations._capture(reader, photo_uuid, identity)['settings']
 
     def apply(self, photo_uuid, settings, expected_settings_token, request_id,
               render=True, *, reset_operation_id=None):
@@ -150,10 +157,14 @@ class SettingsOperations:
         probe = reader.probe()
         if probe.get('capabilities', {}).get('in_place_settings_v1') is not True:
             raise ValueError('Load the Lightroom plugin with in_place_settings_v1 before editing')
+        if probe.get('capabilities', {}).get('copy_protection_v1') is not True:
+            raise ValueError('Load the Lightroom plugin with copy_protection_v1 before editing')
         scope = settings_scope(photo_uuid, probe, client)
         identity = scope['catalog_identity']
-        before = self._snapshot(reader, photo_uuid, identity)
-        if settings_token(photo_uuid, before, probe, client) != expected_settings_token:
+        captured = self._capture(reader, photo_uuid, identity)
+        before = captured['settings']
+        copy_name = require_editable_copy(captured['photo'])
+        if settings_token(photo_uuid, before, probe, client, copy_name) != expected_settings_token:
             raise Conflict('Photo settings or Target/Catalog changed; read fresh settings')
         if reset_operation_id:
             original = self._raw(reset_operation_id)
@@ -167,8 +178,9 @@ class SettingsOperations:
         record = self._raw(request_id)
         dispatched = False
         try:
-            fresh = self._snapshot(reader, photo_uuid, identity)
-            if fingerprint(fresh) != fingerprint(before):
+            fresh = self._capture(reader, photo_uuid, identity)
+            if (fingerprint(fresh['settings']) != fingerprint(before)
+                    or fresh['photo'].get('copy_name', '') != copy_name):
                 raise Conflict('Photo changed before dispatch; read fresh settings')
             record.update(before=before, status='dispatching')
             self._save(record)
@@ -178,14 +190,20 @@ class SettingsOperations:
             applied = reader.run('apply_candidate', {
                 'photo_uuid': photo_uuid, 'settings': settings,
                 'require_in_place_guard': True, 'expected_settings_snapshot': before,
+                'expected_copy_name': copy_name,
                 'request_id': request_id,
             }, catalog_identity=identity)
             if applied.get('status') == 'conflict' and applied.get('applied') is False:
-                record.update(status='rejected', error='Photo changed inside the write gate; read fresh settings')
+                record.update(status='rejected', code=applied.get('code'),
+                              error='Photo changed or is protected inside the write gate; read fresh settings')
                 self._save(record, release=True)
                 return self.get(request_id)
-            after = self._snapshot(reader, photo_uuid, identity)
-            second = self._snapshot(reader, photo_uuid, identity)
+            # The name may change after a successful write. Audit the actual
+            # result without mislabelling that known write as unknown.
+            after_read = self._capture(reader, photo_uuid, identity, check_protection=False)
+            second_read = self._capture(reader, photo_uuid, identity, check_protection=False)
+            after = after_read['settings']
+            second = second_read['settings']
             if fingerprint(after) != fingerprint(second):
                 raise Conflict('Photo settings changed during readback')
             record['after'] = after
@@ -194,7 +212,9 @@ class SettingsOperations:
                           if not same_value(after.get(key), value)]
             if applied.get('after_pending'):
                 record['readback_pending_reported'] = True
-            record.update(settings_token=settings_token(photo_uuid, after, probe, client),
+            record.update(settings_token=settings_token(
+                              photo_uuid, after, probe, client,
+                              second_read['photo'].get('copy_name', '')),
                           before_settings_sha256=fingerprint(before),
                           after_settings_sha256=fingerprint(after),
                           readback_mismatches=mismatches,

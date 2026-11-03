@@ -141,6 +141,12 @@ function Photo:getRawMetadata(key)
   if key == 'isVideo' then return self.video end
   if key == 'rating' then return self.rating end
   if key == 'isVirtualCopy' then return self.virtual end
+  if key == 'masterPhoto' then
+    local masterUuid = self.masterUuid or self.uuid
+    return { getRawMetadata = function(_, metadataKey)
+      if metadataKey == 'uuid' then return masterUuid end
+    end }
+  end
   if key == 'dimensions' then return { width = self.width, height = self.height } end
   error('unexpected raw metadata read: ' .. tostring(key))
 end
@@ -170,6 +176,7 @@ local function photo(opts)
     copy = opts.copy or '',
     rating = opts.rating,
     virtual = opts.virtual or false,
+    masterUuid = opts.masterUuid,
     video = opts.video or false,
     width = opts.width or 6000,
     height = opts.height or 4000,
@@ -187,7 +194,7 @@ local function defaultPhotos()
     photo{ uuid = 'u2', file = 'B.jpg', rating = 0 },
     photo{ uuid = 'u6', file = 'photo 中文.jpg' },
     photo{ uuid = 'u0', file = 'b.jpg', rating = 5 },
-    photo{ uuid = 'u1', file = 'a.jpg', rating = 2, virtual = true, copy = 'candidate' },
+    photo{ uuid = 'u1', file = 'a.jpg', rating = 2, virtual = true, copy = 'candidate', masterUuid = 'u3' },
     photo{ uuid = 'u4', file = 'IMG_100.RAW', rating = 3 },
     photo{ uuid = 'u5', file = 'noext', rating = 4 },
   }
@@ -261,20 +268,22 @@ test('no-filter search enumerates, sorts ASCII-lowercase and reports totals', fu
   check(state.getAllCalls == 1 and state.findCalls == 0, 'no-filter path uses getAllPhotos')
   checkOutsideGate('no-filter query')
   local allowed = { uuid = true, file_name = true, copy_name = true, is_virtual_copy = true,
-    width = true, height = true, rating = true }
+    master_uuid = true, edit_protected = true, width = true, height = true, rating = true }
   for _, item in ipairs(result.photos) do
     local fields = 0
     for key in pairs(item) do
       fields = fields + 1
       check(allowed[key], 'unexpected photo field ' .. tostring(key))
     end
-    check(fields == 7, 'photo record must have exactly seven fields')
+    check(fields == 9, 'photo record must have exactly nine fields')
     check(item.path == nil, 'photo record must not expose a path')
   end
   local byUuid = {}
   for _, item in ipairs(result.photos) do byUuid[item.uuid] = item end
   check(byUuid.u3.rating == 0 and byUuid.u6.rating == 0, 'nil ratings normalize to 0')
   check(byUuid.u1.is_virtual_copy == true and byUuid.u1.copy_name == 'candidate', 'virtual copy fields')
+  check(byUuid.u1.master_uuid == 'u3' and byUuid.u1.edit_protected == false,
+    'virtual-copy identity and edit protection fields')
   check(byUuid.u3.is_virtual_copy == false and byUuid.u3.copy_name == '', 'master fields')
   check(byUuid.u0.width == 6000 and byUuid.u0.height == 4000, 'dimensions')
   check(state.developReads == 0 and state.writeCalls == 0, 'read-only contract')
@@ -553,7 +562,7 @@ end)
 test('probe advertises Catalog search and keeps every previous capability', function()
   usePhotos(defaultPhotos())
   local probe = Commands.probe_client({})
-  check(probe.build_id == 'poll-lifecycle-0.7.0-3',
+  check(probe.build_id == 'poll-lifecycle-0.8.0.0',
     'build_id: ' .. tostring(probe.build_id))
   check(probe.capabilities.catalog_search == true, 'catalog_search capability')
   check(probe.capabilities.expected_catalog_path == nil, 'path binding capability is retired')

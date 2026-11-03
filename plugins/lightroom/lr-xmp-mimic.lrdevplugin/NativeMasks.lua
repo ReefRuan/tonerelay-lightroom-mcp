@@ -5,6 +5,7 @@ local LrTasks = import 'LrTasks'
 local Json = require 'Json'
 local Safety = require 'Safety'
 local UiContext = require 'UiContext'
+local CopyPolicy = require 'CopyPolicy'
 local Masks = {}
 local fields = {}
 for name in ('LocalExposure2012 LocalContrast2012 LocalHighlights2012 LocalShadows2012 LocalWhites2012 LocalBlacks2012 LocalClarity2012 LocalDehaze LocalTexture LocalSaturation LocalSharpness LocalLuminanceNoise LocalMoire LocalDefringe LocalTemperature LocalTint'):gmatch('%S+') do fields[name] = true end
@@ -21,7 +22,8 @@ end
 local function token(photo, settings, cat)
     local LrMD5 = import 'LrMD5'
     return 'native-mask-md5-v1:' .. string.lower(LrMD5.digest(canonical({
-        photo_uuid = photo:getRawMetadata('uuid'), catalog_identity = Safety.catalogIdentity(cat:getPath()), settings = settings })))
+        photo_uuid = photo:getRawMetadata('uuid'), copy_name = CopyPolicy.name(photo),
+        catalog_identity = Safety.catalogIdentity(cat:getPath()), settings = settings })))
 end
 
 local function nonempty(value, limit) return type(value) == 'string' and #value > 0 and #value <= limit end
@@ -108,9 +110,12 @@ function Masks.run(params, prepareSelection)
     local before = photo:getDevelopSettings() or {}
     if action == 'inspect' then
         return {status='inspected', photo_uuid=params.photo_uuid, expected_token=token(photo, before, cat),
+            copy_name=CopyPolicy.name(photo), edit_protected=CopyPolicy.protected(photo),
             is_virtual_copy=photo:getRawMetadata('isVirtualCopy'), masks=summary(before), coverage_verified=false}
     end
     if not photo:getRawMetadata('isVirtualCopy') then error('Native SDK mask writes require an isolated virtual copy') end
+    CopyPolicy.requireEditable(photo)
+    local workingName = CopyPolicy.name(photo)
     if token(photo, before, cat) ~= params.expected_token then error('Native mask conflict: inspect again') end
     if action == 'update' and not groupById(before, params.correction_id) then error('Mask not found') end
     local LrDevelopController = import 'LrDevelopController'
@@ -129,6 +134,8 @@ function Masks.run(params, prepareSelection)
         end
         local function guard()
             Safety.authorize('native_mask', params, cat:getPath())
+            CopyPolicy.requireEditable(photo)
+            if CopyPolicy.name(photo) ~= workingName then error('Working-copy name changed; inspect again') end
             if not UiContext.catalogMatches(context) or not UiContext.owns(context) or cat:getTargetPhoto() ~= photo
                 or LrApplicationView.getCurrentModuleName() ~= 'develop' then error('Develop target changed') end
         end

@@ -27,6 +27,34 @@ class PromptContractTests(unittest.TestCase):
                 with self.assertRaises(PromptContractError):
                     load_runtime_operator_prompt(copied / "manifest.json")
 
+    def test_working_copy_safety_fragments_cannot_silently_disappear(self):
+        source = Path(__file__).resolve().parents[3] / "prompts"
+        critical = (
+            "versions[0].photo_uuid", "TRLR 前缀只是定位线索", "master_uuid",
+            "edit_protected", "display=false", "display=true", "无需用户额外说",
+        )
+        for fragment in critical:
+            with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
+                copied = Path(tmp) / "prompts"
+                shutil.copytree(source, copied)
+                matches = [path for path in copied.rglob("*.md")
+                           if fragment in path.read_text(encoding="utf-8")]
+                self.assertTrue(matches, f"prompt fragment is not present: {fragment}")
+                for path in matches:
+                    content = path.read_text(encoding="utf-8")
+                    path.write_text(content.replace(fragment, ""), encoding="utf-8")
+                with self.assertRaises(PromptContractError):
+                    load_runtime_operator_prompt(copied / "manifest.json")
+
+    def test_prompt_separates_routine_work_copy_edits_from_explicit_candidates(self):
+        prompt = load_runtime_operator_prompt()
+        self.assertIn("普通调色默认首次创建一个工作副本", prompt)
+        self.assertIn("之后持续修改同一个 UUID", prompt)
+        self.assertIn("需要保留多个不可变候选", prompt)
+        self.assertIn("才使用 Episode 候选编辑", prompt)
+        edit_tool = next(item for item in TOOLS if item["name"] == "trlr_edit_episode")
+        self.assertIn("explicit independent immutable candidate", edit_tool["description"])
+
     def test_compiled_prompt_is_the_mcp_initialization_prompt(self):
         expected = load_runtime_operator_prompt()
         response = McpServer(object()).handle({
@@ -68,6 +96,17 @@ class PromptContractTests(unittest.TestCase):
         self.assertIn("不能仅列文件名后声称多张已显示", prompt)
         self.assertIn("display.image_index", prompt)
         self.assertIn("灰色占位不算正文显示成功", prompt)
+
+    def test_image_delivery_follows_user_visible_purpose(self):
+        prompt = load_runtime_operator_prompt()
+        lines = prompt.splitlines()
+        self.assertTrue(any("用户平时说" in line and "display=true" in line for line in lines))
+        self.assertTrue(any("无需用户额外说" in line for line in lines))
+        self.assertTrue(any("模型内部观察" in line and "display=false" in line for line in lines))
+        self.assertTrue(any("不按工具名、照片数量或是否批量" in line for line in lines))
+        self.assertTrue(any("不为模型看过的每张图" in line for line in lines))
+        self.assertTrue(any("用户要求展示其中哪些图时" in line for line in lines))
+        self.assertIn("image-delivery", prompt)
 
     def test_initial_catalog_binding_asks_in_client_and_accepts_bind_reply(self):
         prompt = load_runtime_operator_prompt()

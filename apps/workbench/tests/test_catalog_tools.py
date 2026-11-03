@@ -7,6 +7,7 @@ then filters it locally would drop matches behind the page window.
 """
 
 import copy
+import json
 import unittest
 
 from workbench.catalog import CatalogTools
@@ -175,7 +176,8 @@ class CatalogToolsTests(unittest.TestCase):
 
     def test_photos_are_validated_and_stripped_to_the_contract_fields(self):
         leaked = photo("u1", "a.jpg", rating=3,
-                       path="/private/catalog/a.jpg", develop={"Exposure2012": 1.0})
+                       path="/private/catalog/a.jpg", develop={"Exposure2012": 1.0},
+                       master_uuid="master-1", edit_protected=True)
         result = {**page(100, 0, 1, [leaked]), "catalog_path": "/private/catalog"}
         _, tools = self.recording(result)
         payload = tools.search()
@@ -183,9 +185,12 @@ class CatalogToolsTests(unittest.TestCase):
                                         "has_more", "photos"})
         self.assertEqual(set(payload["photos"][0]), {
             "uuid", "file_name", "copy_name", "is_virtual_copy",
-            "width", "height", "rating"})
+            "width", "height", "rating", "master_uuid", "edit_protected"})
+        self.assertEqual(payload["photos"][0]["master_uuid"], "master-1")
+        self.assertIs(payload["photos"][0]["edit_protected"], True)
         self.assertNotIn("path", payload["photos"][0])
         self.assertNotIn("develop", payload["photos"][0])
+        self.assertNotIn("/private/catalog", json.dumps(payload))
 
         _, tools = self.recording(page(100, 0, 1, [
             photo("u1", "a.jpg", copy_name=None)]))
@@ -196,6 +201,8 @@ class CatalogToolsTests(unittest.TestCase):
             photo("", "a.jpg"),
             photo("u1", 3),
             photo("u1", "a.jpg", copy_name=3),
+            photo("u1", "a.jpg", master_uuid=""),
+            photo("u1", "a.jpg", edit_protected=1),
             photo("u1", "a.jpg", virtual=1),
             photo("u1", "a.jpg", width=True),
             photo("u1", "a.jpg", height=-1),

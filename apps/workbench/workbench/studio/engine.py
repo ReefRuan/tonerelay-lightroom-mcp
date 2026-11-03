@@ -769,11 +769,13 @@ class Studio:
             reads.append(snapshot)
         settings = reads[-1]['settings']
         digest = fingerprint(settings)
-        if fingerprint(reads[0]['settings']) != digest:
+        if (fingerprint(reads[0]['settings']) != digest
+                or reads[0]['photo'].get('copy_name', '') != reads[-1]['photo'].get('copy_name', '')):
             raise Conflict('Photo settings changed during readback; read again')
         result = {
             'schema_version': 'photo-settings-v1',
             'photo_uuid': photo_uuid,
+            'photo': reads[-1]['photo'],
             'source': {'kind': 'catalog_photo', 'photo_uuid': photo_uuid,
                        'target_id': reader.target_id, 'catalog_identity': identity},
             'field_count': len(settings), 'settings_sha256': digest,
@@ -788,7 +790,8 @@ class Studio:
             },
         }
         from ..settings_operations import settings_token
-        result['settings_token'] = settings_token(photo_uuid, settings, probe, client)
+        result['settings_token'] = settings_token(
+            photo_uuid, settings, probe, client, reads[-1]['photo'].get('copy_name', ''))
         if format in ('json', 'both'):
             result['settings'] = settings
         if format in ('xmp', 'both'):

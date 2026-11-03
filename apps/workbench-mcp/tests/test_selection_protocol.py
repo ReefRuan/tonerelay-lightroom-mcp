@@ -200,9 +200,10 @@ class SelectionProtocolTests(unittest.TestCase):
                          ["probe_client", "get_current_folder"])
 
     def test_gallery_orders_metadata_text_and_native_images_per_photo(self):
-        result = success(call(self.server, "trlr_get_current_folder_previews", {
-            "limit": 2, "offset": 0, "size": 512, "max_edge": 128,
-        }))
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
+            result = success(call(self.server, "trlr_get_current_folder_previews", {
+                "limit": 2, "offset": 0, "size": 512, "max_edge": 128, "display": True,
+            }))
         payload = json.loads(result["content"][0]["text"])
         self.assertEqual([item["photo"]["file_name"] for item in payload["items"]],
                          ["IMG_0001.RAF", "IMG_0002.RAF"])
@@ -235,14 +236,24 @@ class SelectionProtocolTests(unittest.TestCase):
             with Image.open(io.BytesIO(base64.b64decode(image_block["data"]))) as image:
                 self.assertLessEqual(max(image.size), 128)
         self.assertEqual(self.bridge.thumbnail_sizes, [128, 128])
+        self.assertTrue(all("display" not in params for _, params in self.bridge.calls))
         self.assertEqual([name for name, _ in self.bridge.calls], [
             "probe_client", "get_current_folder",
             "request_jpeg_thumbnail", "request_jpeg_thumbnail",
         ])
 
+    def test_internal_gallery_observation_keeps_native_images_without_delivery_files(self):
+        with mock.patch.dict("os.environ", {"LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES": "1"}):
+            result = success(call(self.server, "trlr_get_current_folder_previews", {"limit": 2}))
+        self.assertTrue(any(block["type"] == "image" for block in result["content"]))
+        self.assertFalse(any(block["type"] == "text" and '"display"' in block["text"]
+                             for block in result["content"]))
+        self.assertFalse((self.workbench.store.root / "image-delivery").exists())
+
     def test_one_unavailable_thumbnail_keeps_page_and_other_image(self):
         self.bridge.unavailable.add("photo-2")
-        result = success(call(self.server, "trlr_get_current_folder_previews", {"limit": 2}))
+        result = success(call(self.server, "trlr_get_current_folder_previews",
+                              {"limit": 2, "display": True}))
         payload = json.loads(result["content"][0]["text"])
         self.assertEqual([item["preview"]["state"] for item in payload["items"]],
                          ["ready", "unavailable"])

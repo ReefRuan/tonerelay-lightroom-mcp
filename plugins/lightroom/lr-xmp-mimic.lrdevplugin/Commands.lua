@@ -21,8 +21,9 @@ local UiContext = require 'UiContext'
 local ExportResult = require 'ExportResult'
 local Sidecar = require 'Sidecar'
 local NativeMasks = require 'NativeMasks'
+local CopyPolicy = require 'CopyPolicy'
 local PluginVersion = (require 'Info').VERSION
-local PLUGIN_VERSION = string.format('%d.%d.%d', PluginVersion.major, PluginVersion.minor, PluginVersion.revision)
+local PLUGIN_VERSION = string.format('%d.%d.%d.%d', PluginVersion.major, PluginVersion.minor, PluginVersion.revision, PluginVersion.build)
 
 local Commands = {}
 
@@ -165,11 +166,16 @@ local function photoInfo(photo)
         return nil
     end
     local dimensions = photo:getRawMetadata('dimensions') or {}
+    local isCopy = photo:getRawMetadata('isVirtualCopy') == true
+    local master = photo
+    if isCopy then master = photo:getRawMetadata('masterPhoto') end
     return {
         uuid = photo:getRawMetadata('uuid'),
         file_name = photo:getFormattedMetadata('fileName') or '',
         copy_name = photo:getFormattedMetadata('copyName') or '',
-        is_virtual_copy = photo:getRawMetadata('isVirtualCopy') == true,
+        is_virtual_copy = isCopy,
+        master_uuid = master and master:getRawMetadata('uuid') or nil,
+        edit_protected = isCopy and CopyPolicy.protected(photo) or false,
         width = dimensions.width or 0,
         height = dimensions.height or 0,
     }
@@ -182,7 +188,7 @@ function Commands.probe_client(_)
         return {
             lr_version = LrApplication.versionString(),
             plugin_version = PLUGIN_VERSION,
-            build_id = 'poll-lifecycle-0.7.0-3',
+            build_id = 'poll-lifecycle-0.8.0.0',
             catalog_open = false,
             access_mode = Safety.getAccessMode(),
             catalog_authorized = false,
@@ -197,11 +203,12 @@ function Commands.probe_client(_)
     return {
         lr_version = LrApplication.versionString(),
         plugin_version = PLUGIN_VERSION,
-        build_id = 'poll-lifecycle-0.7.0-3',
+        build_id = 'poll-lifecycle-0.8.0.0',
         catalog_open = true,
         capabilities = { expected_catalog_identity = true, expected_access_mode = true,
             catalog_identity = true, develop_snapshot = true,
             in_place_settings_v1 = true,
+            copy_protection_v1 = true,
             develop_presets_read = true, hsl = true, white_balance = true, curves = true,
             catalog_search = true, catalog_folders_v1 = true, current_folder_selection = true, photo_marks_v1 = true,
             sidecar_context_v1 = true,
@@ -677,7 +684,15 @@ local function applyCandidateCore(params)
     if not photo:getRawMetadata('isVirtualCopy') then
         error('apply_candidate only writes to virtual copies; refusing to touch a master photo.')
     end
+    if CopyPolicy.protected(photo) then
+        return { photo = photoInfo(photo), status = 'conflict',
+                 code = 'copy_protected', applied = false }
+    end
     if params.require_in_place_guard then
+        if params.expected_copy_name ~= nil and params.expected_copy_name ~= CopyPolicy.name(photo) then
+            return { photo = photoInfo(photo), status = 'conflict',
+                     code = 'copy_name_changed', applied = false }
+        end
         if type(params.expected_settings_snapshot) ~= 'table' then
             error('In-place edits require a captured settings snapshot.')
         end
@@ -810,6 +825,7 @@ local function resetToBaselineCore(params)
     if not photo:getRawMetadata('isVirtualCopy') then
         error('reset_to_baseline only writes to virtual copies.')
     end
+    CopyPolicy.requireEditable(photo)
     local baseline = State.baselines[params.photo_uuid]
     if not baseline then
         error('No captured baseline for this photo. Run capture_baseline first.')

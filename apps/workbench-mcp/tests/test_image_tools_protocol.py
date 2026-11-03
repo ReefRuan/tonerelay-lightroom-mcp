@@ -271,7 +271,8 @@ class ImageToolsProtocolTests(unittest.TestCase):
         self.workbench.lrops = ThumbnailClient()
         self.workbench._studio = None
         result = self.call("trlr_get_photo_preview", {"photo_uuid": "catalog-photo",
-                                                        "size": 640, "max_edge": 64})
+                                                        "size": 640, "max_edge": 64,
+                                                        "display": True})
         self.assertFalse(result["isError"])
         self.assertEqual(len(result["content"]), 3)
         metadata = self.metadata(result)
@@ -298,7 +299,7 @@ class ImageToolsProtocolTests(unittest.TestCase):
     def test_compare_returns_metadata_and_native_jpeg(self):
         left, right = {**self.source, "name": "v0.jpg"}, self.source
         arguments = {"left": left, "right": right, "roi": [0.0, 0.0, 0.5, 1.0], "max_edge": 64}
-        result = self.call("trlr_image_compare", arguments)
+        result = self.call("trlr_image_compare", {**arguments, "display": True})
         self.assertFalse(result["isError"])
         self.assertEqual(len(result["content"]), 3)
         metadata = self.metadata(result)

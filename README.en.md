@@ -6,6 +6,8 @@
 
 > Source preview: source code and installation instructions are available, but no stable installer has been released and full cross-platform acceptance has not been declared. Pin a commit when installing, and verify your actual environment using that version's installation instructions.
 
+Current release: **0.8.0.0**. Continue ordinary edits on one working virtual copy, protect named copies from writes, and avoid extra chat-display files during internal previews. See the [release notes](docs/RELEASE-0.8.0.0.md).
+
 A local Model Context Protocol (MCP) server for Adobe Lightroom Classic: conversational AI photo editing, reference-based color matching and color grading, subject masks, photo previews, and batch photo culling through an AI agent. View your selected photo and folder previews, refine people and lighting, then keep discussing the result. Edits remain in Lightroom Classic.
 
 ## [Open ToneRelay Portal · Explore features, real editing results, and installation guidance →](https://reefruan.github.io/tonerelay-portal/?lang=en#experience)

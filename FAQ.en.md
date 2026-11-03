@@ -30,6 +30,14 @@ Ask the Agent to “Check the ToneRelay version” and report the actual MCP ver
 
 An upgrade uses the verified newer version and updates ToneRelay entry points while preserving personal data and the currently valid configuration. A fresh installation does not merge old scattered configuration.
 
+## How does 0.8.0.0 handle repeated edits and previews?
+
+Ordinary editing creates a working virtual copy once, then continues on that UUID. If the UUID is forgotten, recover it using TRLR names together with master linkage, the current Catalog and operation records; a name or the highest version alone is insufficient. Copies named with Chinese protection markers (保护, 锁定, 勿改, 只读, 留档) or the supported standalone English protection markers reject Develop and native-mask writes. Read-only viewing remains available. Create another copy only for an explicitly requested independent candidate.
+
+Conversational viewing and final results still display normally: the Agent should use `display=true`. Internal iteration, batch inspection and scoring return native MCP images without extra image-delivery copies by default. A saved operation result can be delivered later without editing or rendering again. Existing Lightroom renders, Bridge outputs and history artifacts can still use disk; this release does not implement end-to-end memory transport.
+
+Update Runtime, MCP and the Lightroom plug-in together. The 0.8.0.0 plug-in build is `poll-lifecycle-0.8.0.0` and must advertise `copy_protection_v1`; an older plug-in without that capability cannot perform in-place writes. Source regression tests do not establish real image-display acceptance in every client.
+
 ## Already installed? How do I update to the latest code?
 
 Copy the same installation/update prompt from the website to your Agent. Each execution queries the latest full commit on the official public MCP main branch, then freezes it for that installation. Future main updates require no version-number edits or new prompt copy. An older healthy installation is updated; an identical healthy resolved commit is only verified and connected. An explicit version/commit request takes precedence. Later or divergent commits, development builds, and unverified installations are reported before replacement, without silent downgrades.

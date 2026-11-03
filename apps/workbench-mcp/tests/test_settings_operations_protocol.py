@@ -25,7 +25,19 @@ class GuardedLR(FakeLR):
         self.settings['copy9'] = copy.deepcopy(self.settings['source'])
         self.inject = None
         self.caps = True
+        self.copy_caps = True
         self.clamp = False
+        self.rename_after_apply = False
+        self.copy_names = {'copy9': 'TRLR'}
+
+    def info(self, photo):
+        result = super().info(photo)
+        if result['is_virtual_copy']:
+            result['copy_name'] = self.copy_names.get(photo, 'TRLR')
+            result['master_uuid'] = 'source'
+        else:
+            result['master_uuid'] = photo
+        return result
 
     def run(self, command, params=None):
         params = params or {}
@@ -36,11 +48,20 @@ class GuardedLR(FakeLR):
             expected = params.get('expected_settings_snapshot')
             if params.get('require_in_place_guard') and expected != self.settings[params['photo_uuid']]:
                 return {'status': 'conflict', 'code': 'settings_changed', 'applied': False}
+            if params.get('require_in_place_guard') and params.get('expected_copy_name') != self.copy_names.get(params['photo_uuid'], 'TRLR'):
+                return {'status': 'conflict', 'code': 'copy_name_changed', 'applied': False}
+            if self.copy_names.get(params['photo_uuid'], 'TRLR').lower() in (
+                    'locked', 'protected', '只读', '勿改', '锁定', '保护', '留档'):
+                return {'status': 'conflict', 'code': 'copy_protected', 'applied': False}
         result = super().run(command, params)
         if command == 'probe_client':
             result['capabilities']['in_place_settings_v1'] = self.caps
+            result['capabilities']['copy_protection_v1'] = self.copy_caps
         if command == 'apply_candidate' and self.clamp:
             self.settings[params['photo_uuid']]['GrainAmount'] = 100
+        if command == 'apply_candidate' and self.rename_after_apply:
+            self.copy_names[params['photo_uuid']] = 'Protected after successful write'
+            self.rename_after_apply = False
         return result
 
 
@@ -84,6 +105,30 @@ class SettingsOperationProtocolTests(unittest.TestCase):
         self.assertEqual(self.lr.settings['source'], original)
         self.assertEqual(self.lr.settings['copy9']['Exposure2012'], 1.9)
         self.assertFalse((self.root / 'sessions').exists())
+
+    def test_episode_v0_is_the_only_copy_used_for_twenty_followup_edits(self):
+        source_before = copy.deepcopy(self.lr.settings['source'])
+        episode = self.data('trlr_create_episode', source_uuid='source',
+                            mode='source_edit', long_edge=256)
+        self.assertEqual(len(episode['versions']), 1)
+        self.assertEqual(episode['versions'][0]['version'], 0)
+        photo_uuid = episode['versions'][0]['photo_uuid']
+        self.assertEqual(self.lr.copies, 1)
+        self.assertNotEqual(photo_uuid, 'source')
+
+        for index in range(20):
+            token = self.data('trlr_get_photo_settings', photo_uuid=photo_uuid,
+                              format='json')['settings_token']
+            result = self.data('trlr_apply_settings', photo_uuid=photo_uuid,
+                settings={'Exposure2012': index / 10}, expected_settings_token=token,
+                request_id=str(uuid.uuid4()), render=False)
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['photo_uuid'], photo_uuid)
+            self.assertEqual(result['new_virtual_copies'], 0)
+
+        self.assertEqual(self.lr.copies, 1)
+        self.assertEqual(self.lr.settings['source'], source_before)
+        self.assertEqual(self.lr.settings[photo_uuid]['Exposure2012'], 1.9)
 
     def test_registry_keeps_sessions_retired_and_restores_edit_and_reset(self):
         names = {tool['name'] for tool in TOOLS}
@@ -134,6 +179,51 @@ class SettingsOperationProtocolTests(unittest.TestCase):
                           expected_settings_token=self.token(), request_id=str(uuid.uuid4()))
         self.assertTrue(result['isError'])
         self.assertFalse(any(c == 'apply_candidate' for c, _ in self.lr.calls))
+
+    def test_missing_copy_protection_capability_fails_closed_independently(self):
+        self.lr.caps = True
+        self.lr.copy_caps = False
+        result = self.rpc('trlr_apply_settings', photo_uuid='copy9',
+            settings={'Exposure2012': .3}, expected_settings_token=self.token(),
+            request_id=str(uuid.uuid4()), render=False)
+        self.assertTrue(result['isError'])
+        self.assertFalse(any(c == 'apply_candidate' for c, _ in self.lr.calls))
+
+    def test_display_is_validated_before_write_and_toggle_never_replays(self):
+        before = copy.deepcopy(self.lr.settings['copy9'])
+        with mock.patch.dict('os.environ', {'LR_XMP_MIMIC_CLIENT_LOCAL_IMAGES': '1'}):
+            invalid = self.rpc('trlr_apply_settings', photo_uuid='copy9',
+                settings={'Exposure2012': .3}, expected_settings_token=self.token(),
+                request_id=str(uuid.uuid4()), render=False, display='true')
+            self.assertTrue(invalid['isError'])
+            self.assertIn('display must be boolean', invalid['content'][0]['text'])
+            self.assertEqual(self.lr.settings['copy9'], before)
+
+            request_id = str(uuid.uuid4())
+            token = self.token()
+            args = {'photo_uuid': 'copy9', 'settings': {'Exposure2012': .3},
+                    'expected_settings_token': token, 'request_id': request_id,
+                    'render': True, 'display': False}
+            first = self.rpc('trlr_apply_settings', **args)
+            self.assertFalse(first['isError'], first)
+            dispatched = sum(c == 'apply_candidate' for c, _ in self.lr.calls)
+            calls = len(self.lr.calls)
+            args['display'] = True
+            second = self.rpc('trlr_apply_settings', **args)
+            self.assertFalse(second['isError'], second)
+            self.assertEqual(len(self.lr.calls), calls)
+            self.assertEqual(sum(c == 'apply_candidate' for c, _ in self.lr.calls), dispatched)
+            self.assertTrue(any(b['type'] == 'image' for b in second['content']))
+            refs = [json.loads(b['text'])['display'] for b in second['content']
+                    if b['type'] == 'text' and '"display"' in b['text']]
+            self.assertTrue(refs)
+            self.assertEqual(refs[0]['kind'], 'local_file')
+
+    def test_successful_write_stays_completed_if_user_renames_copy_protected_afterward(self):
+        self.lr.rename_after_apply = True
+        result = self.apply()
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(self.lr.settings['copy9']['Exposure2012'], .3)
 
     def test_stale_wrong_photo_and_catalog_tokens_fail_without_write(self):
         old = self.token()
@@ -187,6 +277,32 @@ class SettingsOperationProtocolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'rejected')
         self.assertEqual(self.lr.settings['copy9']['Exposure2012'], 1.1)
         self.assertEqual(self.apply({'Contrast2012': 4})['status'], 'completed')
+
+    def test_protected_copy_rejection_is_recoverable_and_does_not_poison_writer(self):
+        self.lr.copy_names['copy9'] = 'Portrait 勿改'
+        rejected = self.rpc('trlr_apply_settings', photo_uuid='copy9',
+            settings={'Exposure2012': .3}, expected_settings_token=self.token(),
+            request_id=str(uuid.uuid4()), render=False)
+        self.assertTrue(rejected['isError'])
+        self.lr.copy_names['copy9'] = 'TRLR'
+        self.assertEqual(self.apply({'Contrast2012': 4})['status'], 'completed')
+
+    def test_rename_between_read_and_write_gate_is_rejected_without_mutation(self):
+        before = copy.deepcopy(self.lr.settings['copy9'])
+        self.lr.inject = lambda: self.lr.copy_names.update(copy9='renamed by user')
+        result = self.apply()
+        self.assertEqual(result['status'], 'rejected')
+        self.assertEqual(self.lr.settings['copy9'], before)
+        self.assertEqual(self.apply({'Contrast2012': 4})['status'], 'completed')
+
+    def test_copy_name_is_bound_into_settings_token(self):
+        token = self.token()
+        self.lr.copy_names['copy9'] = 'Renamed work copy'
+        result = self.rpc('trlr_apply_settings', photo_uuid='copy9',
+            settings={'Exposure2012': .3}, expected_settings_token=token,
+            request_id=str(uuid.uuid4()), render=False)
+        self.assertTrue(result['isError'])
+        self.assertFalse(any(command == 'apply_candidate' for command, _ in self.lr.calls))
 
     def test_reset_uses_captured_values_and_refuses_later_changes(self):
         first = self.apply({'Exposure2012': .7, 'Contrast2012': 9})

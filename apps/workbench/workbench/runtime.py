@@ -164,6 +164,9 @@ class Workbench:
 
     def run(self, command, params=None):
         probe = self.studio.probe()
+        if (command == "native_mask" and (params or {}).get("action", "inspect") != "inspect"
+                and probe.get("capabilities", {}).get("copy_protection_v1") is not True):
+            raise ValueError("Load the Lightroom plugin with copy_protection_v1 before editing masks")
         return self.studio.run(
             command, params, catalog_identity=probe["catalog_identity"])
 

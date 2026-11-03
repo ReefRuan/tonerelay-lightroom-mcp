@@ -7,14 +7,14 @@ end
 local initial = { Exposure2012 = 0, Temperature = 6150, Tint = 17,
     WhiteBalance = 'As Shot', GrainAmount = 28, CameraProfile = 'Camera NT',
     ToneCurveName2012 = 'Custom', ToneCurvePV2012 = {0, 0, 255, 255} }
-local photo = { settings = clone(initial), virtual = true }
+local photo = { settings = clone(initial), virtual = true, copyName = 'TRLR' }
 function photo:getDevelopSettings() return self.settings end
 function photo:getRawMetadata(key)
     if key == 'isVirtualCopy' then return self.virtual end
     if key == 'uuid' then return 'copy' end
     if key == 'dimensions' then return {} end
 end
-function photo:getFormattedMetadata() return '' end
+function photo:getFormattedMetadata(key) if key == 'copyName' then return self.copyName end return '' end
 function photo:applyDevelopPreset(preset)
     self.settings = clone(preset)
     self.settings.Temperature = preset.Temperature or 2000
@@ -23,7 +23,11 @@ function photo:applyDevelopPreset(preset)
 end
 local catalog = {}
 function catalog:findPhotoByUuid() return photo end
-function catalog:withWriteAccessDo(_, callback) callback(); return 'executed' end
+local renameOnWrite = false
+function catalog:withWriteAccessDo(_, callback)
+    if renameOnWrite then photo.copyName = 'Renamed by user'; renameOnWrite = false end
+    callback(); return 'executed'
+end
 import = function(name)
     if name == 'LrApplication' then return {
         activeCatalog = function() return catalog end,
@@ -61,6 +65,23 @@ assert(rejected.status == 'conflict' and rejected.applied == false,
 assert(photo.settings.Exposure2012 == 0.7, 'stale edits must not overwrite later user changes')
 expected = clone(photo.settings)
 Commands.apply_candidate { photo_uuid = 'copy', settings = { Exposure2012 = 0.8 },
-    require_in_place_guard = true, expected_settings_snapshot = expected }
+    require_in_place_guard = true, expected_settings_snapshot = expected, expected_copy_name = 'TRLR' }
 assert(photo.settings.Exposure2012 == 0.8, 'fresh snapshot must edit the same virtual copy')
+expected = clone(photo.settings)
+local protectedBefore = clone(photo.settings)
+photo.copyName = '交付版-勿改'
+local protected = Commands.apply_candidate { photo_uuid = 'copy',
+    settings = { Exposure2012 = 0.9 }, require_in_place_guard = true,
+    expected_settings_snapshot = expected, expected_copy_name = photo.copyName }
+assert(protected.status == 'conflict' and protected.code == 'copy_protected'
+    and protected.applied == false, 'protected name must reject inside the real command gate')
+assert(photo.settings.Exposure2012 == protectedBefore.Exposure2012, 'protected copy must remain unchanged')
+photo.copyName = 'TRLR'
+renameOnWrite = true
+local renamed = Commands.apply_candidate { photo_uuid = 'copy',
+    settings = { Exposure2012 = 0.9 }, require_in_place_guard = true,
+    expected_settings_snapshot = expected, expected_copy_name = 'TRLR' }
+assert(renamed.status == 'conflict' and renamed.code == 'copy_name_changed'
+    and renamed.applied == false, 'name change after preflight must reject in the actual write gate')
+assert(photo.settings.Exposure2012 == protectedBefore.Exposure2012, 'rename conflict must not write')
 print('white-balance-patch-test: passed')
