@@ -90,7 +90,7 @@ After installation and acceptance checks, open Lightroom Classic and the target 
 
 Normal Develop workflows preserve the original photo through separate virtual copies. You can review existing versions and continue refining them. Ratings, flags, and color labels are written to the Catalog for the confirmed task. Direct file operations, such as RAW sidecar changes, require explicit authorization and specified targets. Use Lightroom's actual readback and returned images as evidence of execution.
 
-ToneRelay is an independent project, not an official Adobe product, and is not affiliated with or endorsed by Adobe. This integration targets **Lightroom Classic**; it does not imply support for cloud-based Lightroom or Photoshop.
+ToneRelay is an independent project, not an official Adobe product, and is not affiliated with or endorsed by Adobe. This integration targets **Lightroom Classic**. An experimental executor for Lightroom desktop (cloud) is documented in the [installation guide](INSTALL.en.md#lightroom-desktop-cloud-experimental); it does not imply support for Photoshop.
 
 ## License
 

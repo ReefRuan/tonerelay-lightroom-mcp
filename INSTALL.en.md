@@ -121,6 +121,46 @@ To inspect configuration or troubleshoot, you can say:
 
 The initial Catalog binding requires explicit confirmation. Connectivity and photo-selection checks after binding remain read-only. Photo modifications begin only with a subsequent, explicit editing task.
 
+## Lightroom desktop (cloud, experimental)
+
+ToneRelay can also drive **Lightroom desktop** — the cloud version, not Classic — through Adobe's External Controller API. The job queue, the `lr_ops` command line and the MCP tools are unchanged; only the executor differs. This path is narrower than Classic and is marked experimental, because the app exposes far less to automation.
+
+| Feature | Status |
+| --- | --- |
+| Reading the open photo's develop settings, applying new ones, and verifying them by readback | works |
+| Capture a baseline, apply a candidate, reset to the baseline | works |
+| Virtual copies | not available: Lightroom has no virtual copies |
+| Catalog browsing, folders, collections, search | not available: a controller can only address the photo currently open |
+| Sidecar XMP | not written: cloud keeps develop settings inside its own catalog |
+| Import and export previews | not available: the controller has no such commands |
+| Masks | the API exposes them; not implemented here |
+
+Because there is no virtual copy, **edits land on the real photo.** `lr_ops reset` returns the photo to its captured baseline, and setting `LR_CLOUD_RESTORE_ON_EXIT=1` makes the executor write that baseline back before it stops on Ctrl-C. A crash or `SIGKILL` cannot do that, so `reset` remains the explicit way to discard a round.
+
+### Requirements
+
+Lightroom desktop 9.4 or newer (verified on 10.0, macOS), Node.js 20 or newer, and Python 3.10 or newer for `lr_ops`, as in the Classic installation.
+
+### Install
+
+In Lightroom, open **Preferences → Interface → Enable external controllers**, then quit and relaunch Lightroom. Put the bridge files from this repository's `bridges/lightroom-cloud/` in place, start the job queue as usual, and start the executor in another terminal:
+
+```sh
+cd services/lr-ops && python3 -m lr_ops serve
+cd bridges/lightroom-cloud && LR_OPS_URL=http://127.0.0.1:17777 node adapter.mjs
+```
+
+The first run makes Lightroom show a **Pair** dialog; allow it once. The client id is cached, so it will not ask again.
+
+Open the photo you want to edit, stay in the Develop module, and use ToneRelay as usual. If port 17777 is held by another process, start `lr_ops` with `LR_XMP_MIMIC_BRIDGE_PORT` and `LR_XMP_MIMIC_RUNTIME_DATA_ROOT` and point `LR_OPS_URL` at the same port; the symptom of a conflict is a `403 Forbidden` from the CLI rather than a queued command.
+
+### Verify
+
+```sh
+cd services/lr-ops && python3 -m lr_ops probe   # reports build_id lightroom-cloud-adapter
+cd bridges/lightroom-cloud && node verify.mjs   # 24 live assertions, restores the photo
+```
+
 ## Connection failures and recovery
 
 First check status through the `control` entry point provided by the installed version. On macOS, use `bridge status`, `bridge start`, `lightroom-plugin status`, and `mcp status` as needed. Refresh or reconnect in the actual client, then verify the current photo selection again.

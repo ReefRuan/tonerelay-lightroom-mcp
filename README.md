@@ -90,7 +90,7 @@ https://gitee.com/ReefRuan/tonerelay-lightroom-mcp
 
 常规显影流程通过独立虚拟副本保留原片，可以查看已有版本并继续调整。星级、旗标和颜色标签会按已确认的任务写回 Catalog。RAW sidecar 等直接文件操作需要明确授权并指定目标。执行情况以 Lightroom 实际回读和返回的图像为准。
 
-ToneRelay 是独立项目，非 Adobe 官方产品，与 Adobe 无隶属或背书关系。该集成面向 **Lightroom Classic**，不等于支持云版 Lightroom 或 Photoshop。
+ToneRelay 是独立项目，非 Adobe 官方产品，与 Adobe 无隶属或背书关系。该集成面向 **Lightroom Classic**；面向云版 Lightroom 的实验性执行器见[安装说明](INSTALL.md#lightroom-桌面版云版实验性)，但都不等于支持 Photoshop。
 
 ## 许可证
 
