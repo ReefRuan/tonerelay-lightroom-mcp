@@ -123,6 +123,46 @@ Codex TOML、官方 Plugin 或 UI 管理的接入，改用官方模式登记实�
 
 首次 Catalog 绑定需要明确确认；绑定后的连通和选片验收保持只读。修改照片由后续明确的修图任务发起。
 
+## Lightroom 桌面版（云版，实验性）
+
+ToneRelay 也能通过 Adobe 的外部控制器接口驱动 **Lightroom 桌面版**（即云版，不是 Classic）。任务队列、`lr_ops` 命令行和 MCP 工具都不变，只替换执行器。这条通道比 Classic 窄得多，因此标记为实验性：云版对自动化暴露的能力少很多。
+
+| 功能 | 状态 |
+| --- | --- |
+| 读取当前打开照片的修图设置、写入新设置并回读核对 | 可用 |
+| 捕获基线、应用候选方案、回退到基线 | 可用 |
+| 虚拟副本 | 不可用：云版没有虚拟副本 |
+| 目录浏览、文件夹、收藏夹、搜索 | 不可用：控制器只能操作当前打开的那张照片 |
+| 旁车 XMP | 不写：云版把修图设置存在自己的目录（catalog）里 |
+| 导入与导出预览 | 不可用：控制器没有这些命令 |
+| 蒙版 | 接口支持，本版本尚未实现 |
+
+没有虚拟副本，**修改就会直接落在原照片上。** `lr_ops reset` 会把照片恢复到已捕获的基线；设置 `LR_CLOUD_RESTORE_ON_EXIT=1` 后，执行器用 Ctrl-C 停止前会先把该基线写回。崩溃或 `SIGKILL` 做不到这一点，所以丢弃一轮修改仍以 `reset` 为准。
+
+### 环境要求
+
+Lightroom 桌面版 9.4 或以上（已在 10.0、macOS 上验证）、Node.js 20 或以上，以及供 `lr_ops` 使用的 Python 3.10 或以上，与 Classic 安装相同。
+
+### 安装
+
+在 Lightroom 中打开 **首选项 → 界面 → 启用外部控制器（Enable external controllers）**，然后退出并重新启动 Lightroom。把本仓库 `bridges/lightroom-cloud/` 下的文件安装到位，照常启动任务队列，再另开一个终端启动执行器：
+
+```sh
+cd services/lr-ops && python3 -m lr_ops serve
+cd bridges/lightroom-cloud && LR_OPS_URL=http://127.0.0.1:17777 node adapter.mjs
+```
+
+首次运行 Lightroom 会弹出 **配对（Pair）** 对话框，允许一次即可；客户端 ID 会缓存，之后不再询问。
+
+打开要编辑的照片，停留在「修改照片」（Develop）模块，然后照常使用 ToneRelay。若 17777 已被其他进程占用，用 `LR_XMP_MIMIC_BRIDGE_PORT` 与 `LR_XMP_MIMIC_RUNTIME_DATA_ROOT` 启动 `lr_ops`，并把 `LR_OPS_URL` 指向同一端口；端口冲突的表现是 CLI 返回 `403 Forbidden`，而不是命令进入排队。
+
+### 验证
+
+```sh
+cd services/lr-ops && python3 -m lr_ops probe   # 应返回 build_id lightroom-cloud-adapter
+cd bridges/lightroom-cloud && node verify.mjs   # 24 项在线断言，结束后恢复原照片设置
+```
+
 ## 连接失败与恢复
 
 先用已安装版本给出的 `control` 查询状态；macOS 可按需要使用 `bridge status`、`bridge start`、`lightroom-plugin status` 和 `mcp status`。在真实客户端中刷新或重连后，再验证当前选片。
