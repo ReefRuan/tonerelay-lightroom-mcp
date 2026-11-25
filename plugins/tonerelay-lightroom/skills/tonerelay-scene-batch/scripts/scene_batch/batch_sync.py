@@ -26,6 +26,13 @@ CROP_KEYS = frozenset({
     "CropAngle", "CropBottom", "CropLeft", "CropRight", "CropTop", "CropConstrainToWarp",
 })
 
+RESETTABLE_CURVE_KEYS = frozenset({
+    "ToneCurvePV2012",
+    "ToneCurvePV2012Red",
+    "ToneCurvePV2012Green",
+    "ToneCurvePV2012Blue",
+})
+
 NON_RECIPE_KEYS = frozenset({
     "ProcessVersion",
     "CameraProfile",
@@ -71,8 +78,14 @@ def extract_recipe_diff(
     master_settings: dict | None = None,
     *,
     include_crop: bool = False,
+    reset_curves: bool = True,
 ) -> dict:
-    """Extract portable Develop settings from an anchor virtual copy relative to its master."""
+    """Extract portable Develop settings from an anchor virtual copy relative to its master.
+
+    When ``reset_curves`` is True (default), tone/RGB curve keys present on the anchor
+    (including default linear ``[0, 0, 255, 255]``) are always emitted so syncing onto
+    pre-existing working virtual copies deterministically clears any stale curves.
+    """
     master = master_settings or {}
     recipe: dict = {}
 
@@ -83,8 +96,9 @@ def extract_recipe_diff(
             continue
         if not _is_recipe_value(val):
             continue
-        if key in master and _same_setting_value(val, master[key]):
-            continue
+        if not (reset_curves and key in RESETTABLE_CURVE_KEYS):
+            if key in master and _same_setting_value(val, master[key]):
+                continue
         recipe[key] = val
 
     # Ensure RAW or rendered WB axes are always emitted as an explicit pair when customized.
@@ -129,6 +143,7 @@ def read_anchors_from_lightroom(
     *,
     folder_id: str | None = None,
     include_crop: bool = False,
+    reset_curves: bool = True,
 ) -> dict:
     """Read calibrated anchor virtual copies from Lightroom and build scene_recipes.json."""
     client.probe()
@@ -171,6 +186,7 @@ def read_anchors_from_lightroom(
             anchor_snap.get("settings") or {},
             master_snap.get("settings") or {},
             include_crop=include_crop,
+            reset_curves=reset_curves,
         )
         pmeta = photo_meta_by_stem.get(anchor_stem, {})
         recipes[sid] = {
@@ -528,6 +544,110 @@ def _export_atomic(
         raise
 
 
+def apply_anchor_settings(
+    client: LrOpsBridgeClient,
+    settings: dict,
+    *,
+    vc_uuid: str | None = None,
+    folder_id: str | None = None,
+    stem: str | None = None,
+    copy_name: str = "TRLR Anchor",
+    render_path: Path | None = None,
+    render_max_edge: int = 1600,
+    create_if_protected: bool = False,
+) -> dict:
+    """Apply Develop settings (including paired Temperature+Tint on 'As Shot' RAWs) to one anchor VC."""
+    client.probe()
+    created_vc = False
+    resolved_uuid = vc_uuid
+
+    if not resolved_uuid:
+        if not (folder_id and stem):
+            raise ValueError("Provide either vc_uuid or both folder_id and stem")
+        target_stem = stem.upper()
+        photos = client.list_folder_photos([folder_id], include_virtual_copies=True)
+        master = next((p for p in photos if not p.get("is_virtual_copy") and _stem_of(p["file_name"]) == target_stem), None)
+        if not master:
+            raise LrOpsError(f"Master photo {target_stem} not found in folder {folder_id}")
+        muid = master["uuid"]
+        existing_vcs = [p for p in photos if p.get("is_virtual_copy") and p.get("master_uuid") == muid]
+        editable_vcs = [
+            vc for vc in existing_vcs
+            if not vc.get("edit_protected") and not is_protected_name(vc.get("copy_name"))
+        ]
+        if editable_vcs:
+            resolved_uuid = editable_vcs[0]["uuid"]
+        elif existing_vcs and not create_if_protected:
+            raise LrOpsError(f"All existing virtual copies for {target_stem} are protected")
+        else:
+            res = client.create_virtual_copy(muid, name=copy_name)
+            resolved_uuid = (res.get("copy") or {}).get("uuid")
+            if not resolved_uuid:
+                raise LrOpsError(f"create_virtual_copy returned no uuid for {target_stem}")
+            created_vc = True
+
+    snap = client.get_develop_snapshot(resolved_uuid)
+    photo_info = snap.get("photo") or {}
+    before_settings = snap.get("settings") or {}
+    if not photo_info.get("is_virtual_copy"):
+        raise LrOpsError(f"Refusing to modify master photo {resolved_uuid}")
+    actual_copy_name = photo_info.get("copy_name") or ""
+    if photo_info.get("edit_protected") or is_protected_name(actual_copy_name):
+        raise LrOpsError(f"Refusing to modify protected virtual copy {resolved_uuid} ({actual_copy_name})")
+
+    effective = {k: v for k, v in settings.items() if k != "crop"}
+    if "crop" in settings:
+        crop_spec = settings["crop"]
+        if not isinstance(crop_spec, dict):
+            raise ValueError("settings['crop'] must be a dict")
+        disp_w = photo_info.get("width") or 0
+        disp_h = photo_info.get("height") or 0
+        lr_ori = before_settings.get("orientation") or "AB"
+        effective.update(compute_lr_crop(crop_spec, disp_width=disp_w, disp_height=disp_h, lr_orientation=lr_ori))
+
+    validate_wb_patch(effective, before_settings)
+    client.run_batch([{
+        "command": "apply_candidate",
+        "params": {
+            "photo_uuid": resolved_uuid,
+            "settings": effective,
+            "require_in_place_guard": True,
+            "expected_settings_snapshot": before_settings,
+            "expected_copy_name": actual_copy_name,
+        },
+    }])
+
+    after_snap = client.get_develop_snapshot(resolved_uuid)
+    after_settings = after_snap.get("settings") or {}
+    mismatches = [
+        {"key": k, "requested": v, "actual": after_settings.get(k)}
+        for k, v in effective.items()
+        if not _same_setting_value(after_settings.get(k), v)
+    ]
+
+    render_info = None
+    if render_path is not None:
+        render_info = _export_atomic(
+            client,
+            resolved_uuid,
+            Path(render_path),
+            max_edge=render_max_edge,
+            reencode_quality=88,
+        )
+
+    return {
+        "ok": len(mismatches) == 0,
+        "vc_uuid": resolved_uuid,
+        "copy_name": actual_copy_name,
+        "created_vc": created_vc,
+        "applied_keys": sorted(effective.keys()),
+        "white_balance": after_settings.get("WhiteBalance"),
+        "mismatches_count": len(mismatches),
+        "mismatches": mismatches,
+        "render": render_info,
+    }
+
+
 def execute_sync(
     client: LrOpsBridgeClient | None,
     plan: dict,
@@ -546,6 +666,7 @@ def execute_sync(
     keep_resolution: bool = False,
     force_reapply: bool = False,
     force_reexport: bool = False,
+    progress_stream=None,
 ) -> dict:
     """Execute or dry-run the batch sync plan serially with per-chunk persistence."""
     if apply_only and export_only:
@@ -615,6 +736,33 @@ def execute_sync(
     if client is None:
         raise ValueError("Live bridge client is required when dry_run=False")
     client.probe()
+    t_sync_start = time.monotonic()
+    last_log_t = t_sync_start
+
+    def _record_progress(phase: str, done: int, total: int, *, force_log: bool = False, extra: str = "") -> None:
+        nonlocal last_log_t
+        now_m = time.monotonic()
+        elapsed = max(0.0, now_m - t_sync_start)
+        eta = round((elapsed / done) * (total - done), 1) if done > 0 and total > done else 0.0
+        state["progress"] = {
+            "phase": phase,
+            "done": done,
+            "total": total,
+            "mismatches": len(mismatches_report) if phase != "create_vc" else 0,
+            "elapsed_sec": round(elapsed, 1),
+            "eta_sec": eta,
+            "updated_at": time.time(),
+        }
+        if progress_stream is not None and (force_log or (now_m - last_log_t) >= 30.0):
+            last_log_t = now_m
+            eta_str = f" eta={int(eta // 60)}m{int(eta % 60):02d}s" if eta > 0 else ""
+            suffix = f" {extra}" if extra else ""
+            progress_stream.write(
+                f"[scene_batch sync] phase={phase} {done}/{total} elapsed={int(elapsed)}s{eta_str}{suffix}\n"
+            )
+            progress_stream.flush()
+
+    mismatches_report: list[dict] = []
 
     # Phase 1: Create missing virtual copies serially (without wasteful v0 exports)
     vcs_created = 0
@@ -628,12 +776,12 @@ def execute_sync(
         rec["vc_uuid"] = vc_uuid
         rec["copy_name"] = copy_info.get("copy_name") or it["copy_name"]
         vcs_created += 1
+        _record_progress("create_vc", vcs_created, len(vc_needed), force_log=(vcs_created == len(vc_needed)))
         _save_state(state_path, state)
 
     # Phase 2: Batch-apply Develop patches in chunks via command_batch
     applied_count = 0
     skipped_protected: list[str] = []
-    mismatches_report: list[dict] = []
 
     for start in range(0, len(apply_needed), batch_size):
         chunk = apply_needed[start:start + batch_size]
@@ -716,12 +864,20 @@ def execute_sync(
             applied_count += 1
             if mismatches:
                 mismatches_report.append({"stem": it["stem"], "mismatches": mismatches})
+        _record_progress(
+            "apply",
+            applied_count,
+            len(apply_needed),
+            force_log=True,
+            extra=f"mismatches={len(mismatches_report)}",
+        )
         _save_state(state_path, state)
 
     # Phase 3: Serial atomic export
     exported_count = 0
     if not apply_only and output_dir is not None:
         output_dir = Path(output_dir)
+        export_total = len(export_needed)
         for it in target_items:
             if it["stem"] in skipped_protected:
                 continue
@@ -745,7 +901,17 @@ def execute_sync(
             rec["export"] = exp_info
             rec["exported_at"] = time.time()
             exported_count += 1
+            _record_progress(
+                "export",
+                exported_count,
+                export_total,
+                force_log=(exported_count == 1 or exported_count % 10 == 0 or exported_count == export_total),
+                extra=f"last={it['stem']} ({exp_info.get('kb')} KB, q={exp_info.get('quality_used')})",
+            )
             _save_state(state_path, state)
+
+    _record_progress("done", len(target_items), len(target_items), force_log=False)
+    _save_state(state_path, state)
 
     return {
         "ok": True,

@@ -24,7 +24,13 @@ SKILL_SCRIPTS_ROOT = PLUGIN_DIR / "skills" / "tonerelay-scene-batch" / "scripts"
 if str(SKILL_SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SKILL_SCRIPTS_ROOT))
 
-from scene_batch.batch_sync import build_sync_plan, execute_sync, extract_recipe_diff, read_anchors_from_lightroom
+from scene_batch.batch_sync import (
+    apply_anchor_settings,
+    build_sync_plan,
+    execute_sync,
+    extract_recipe_diff,
+    read_anchors_from_lightroom,
+)
 from scene_batch.contact_audit import run_audit
 from scene_batch.crop_math import compute_lr_crop, exif_to_lr_orientation, lr_raw_to_display_box
 from scene_batch.lrops_client import (
@@ -602,6 +608,102 @@ class SceneBatchWorkflowTests(unittest.TestCase):
             self.assertTrue((package / "skills" / "tonerelay-scene-batch" / "references" / "workflow.md").is_file())
             self.assertTrue((package / "skills" / "tonerelay-scene-batch" / "scripts" / "scene_batch" / "cli.py").is_file())
             self.assertFalse((package / "skills" / "tonerelay-scene-batch" / "scripts" / "scene_batch" / "__pycache__").exists())
+
+    def test_reset_curves_preferred_anchor_apply_anchor_and_progress(self):
+        linear = [0, 0, 255, 255]
+        master = {
+            "Exposure2012": 0.0,
+            "ToneCurvePV2012": linear,
+            "ToneCurvePV2012Red": linear,
+            "ToneCurvePV2012Green": linear,
+            "ToneCurvePV2012Blue": linear,
+        }
+        anchor = dict(master, Exposure2012=0.25, WhiteBalance="Custom", Temperature=4500, Tint=10)
+        recipe_reset = extract_recipe_diff(anchor, master, reset_curves=True)
+        self.assertEqual(recipe_reset["ToneCurvePV2012Red"], linear)
+        self.assertEqual(recipe_reset["ToneCurvePV2012Blue"], linear)
+        recipe_omit = extract_recipe_diff(anchor, master, reset_curves=False)
+        self.assertNotIn("ToneCurvePV2012Red", recipe_omit)
+
+        photos = [
+            {"stem": f"P{i:02d}", "neutral_a": 0.0, "neutral_b": 0.0, "neutral_l": 50.0,
+             "median_l": 50.0, "clip_high_pct": 0.0, "clip_low_pct": 0.0, "sharpness": 100.0 if i == 0 else 50.0}
+            for i in range(4)
+        ]
+        scenes = [{"scene_id": "S01", "stems": [p["stem"] for p in photos]}]
+        pick_anchors_and_outliers(scenes, photos, preferred_stems={"P02", "P03"})
+        self.assertIn(scenes[0]["anchor_stem"], {"P02", "P03"})
+        self.assertTrue(scenes[0]["anchor_in_preferred"])
+        self.assertEqual(scenes[0]["preferred_count"], 2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            img_dir = root / "in"
+            seg_dir = root / "seg"
+            exp_dir = root / "exp"
+            img_dir.mkdir()
+            for idx in range(1, 3):
+                arr = np.full((120, 180, 3), 140, dtype=np.uint8)
+                Image.fromarray(arr).save(img_dir / f"DSC300{idx}.jpg", quality=92)
+
+            state = _MockBridgeState(root)
+            state.add_master("m-1", "DSC3001.jpg", flag="pick", width=180, height=120)
+            state.add_master("m-2", "DSC3002.jpg", flag="pick", width=180, height=120)
+            state.settings["m-1"]["ToneCurvePV2012Red"] = linear
+            state.settings["m-2"]["ToneCurvePV2012Red"] = linear
+            state.add_vc(
+                "vc-1",
+                "m-1",
+                copy_name="TRLR Anchor",
+                settings={"WhiteBalance": "As Shot", "Exposure2012": 0.0, "ToneCurvePV2012Red": [0, 0, 128, 138, 255, 255]},
+            )
+            state.settings["vc-1"].pop("Temperature", None)
+            state.settings["vc-1"].pop("Tint", None)
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(state))
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                client = LrOpsBridgeClient(
+                    base=f"http://127.0.0.1:{port}",
+                    token=None,
+                    catalog_identity=state.catalog_identity,
+                    access_mode="full",
+                )
+                render_jpg = root / "anchor_preview.jpg"
+                app_res = apply_anchor_settings(
+                    client,
+                    {"Temperature": 4800, "Tint": 12, "Exposure2012": 0.2, "ToneCurvePV2012Red": linear},
+                    vc_uuid="vc-1",
+                    render_path=render_jpg,
+                    render_max_edge=600,
+                )
+                self.assertTrue(app_res["ok"])
+                self.assertEqual(app_res["white_balance"], "Custom")
+                self.assertEqual(app_res["mismatches_count"], 0)
+                self.assertTrue(render_jpg.is_file())
+
+                seg = run_segmentation(img_dir, seg_dir, window=1, min_segment=1, workers=1, preferred_stems={"DSC3001"})
+                scenes_doc = json.loads(Path(seg["scenes_json"]).read_text(encoding="utf-8"))
+                self.assertEqual(scenes_doc["scenes"][0]["anchor_stem"], "DSC3001")
+
+                recipes = read_anchors_from_lightroom(client, scenes_doc, {"S01": "vc-1"})
+                self.assertEqual(recipes["scenes"]["S01"]["settings"]["ToneCurvePV2012Red"], linear)
+
+                plan = build_sync_plan(scenes_doc, recipes, list(state.photos.values()), flag_filter="pick")
+                progress_buf = io.StringIO()
+                state_path = root / "sync_state.json"
+                sync_res = execute_sync(client, plan, state_path, output_dir=exp_dir, progress_stream=progress_buf)
+                self.assertEqual(sync_res["exported_count"], 2)
+                self.assertIn("[scene_batch sync] phase=apply", progress_buf.getvalue())
+                self.assertIn("[scene_batch sync] phase=export", progress_buf.getvalue())
+                saved = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["progress"]["phase"], "done")
+                self.assertEqual(saved["progress"]["done"], 2)
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

@@ -496,9 +496,16 @@ def pick_anchors_and_outliers(
     wb_outlier_delta: float = 5.5,
     exp_l_delta: float = 14.0,
     clip_high_threshold: float = 4.0,
+    preferred_stems: set[str] | None = None,
 ) -> None:
-    """Pick one sharp, representative anchor photo and flag outliers inside each Lighting Scene."""
+    """Pick one sharp, representative anchor photo and flag outliers inside each Lighting Scene.
+
+    When ``preferred_stems`` is supplied (e.g. picked/flagged photos), anchors are chosen
+    strictly from the preferred subset inside each scene whenever at least one candidate exists,
+    while timeline segmentation and scene statistics still use all photos.
+    """
     photo_by_stem = {p["stem"]: p for p in photos}
+    norm_pref = {s.upper() for s in preferred_stems} if preferred_stems else None
     for scene in scenes:
         items = [photo_by_stem[s] for s in scene["stems"]]
         na = float(np.median([x["neutral_a"] for x in items]))
@@ -506,7 +513,9 @@ def pick_anchors_and_outliers(
         med_l = float(np.median([x["median_l"] for x in items]))
         med_sharp = max(1.0, float(np.median([x["sharpness"] for x in items])))
 
-        best_stem = items[0]["stem"]
+        pref_items = [it for it in items if norm_pref and it["stem"].upper() in norm_pref]
+        restrict_anchor = bool(pref_items)
+        best_stem = pref_items[0]["stem"] if restrict_anchor else items[0]["stem"]
         best_cost = float("inf")
         outliers = []
 
@@ -531,6 +540,8 @@ def pick_anchors_and_outliers(
                     "clip_high_pct": item["clip_high_pct"],
                 })
 
+            if restrict_anchor and item["stem"].upper() not in norm_pref:
+                continue
             wb_err = math.hypot(item["neutral_a"] - na, item["neutral_b"] - nb)
             l_err = abs(item["median_l"] - med_l)
             sharp_ratio = min(2.5, item["sharpness"] / med_sharp)
@@ -543,6 +554,9 @@ def pick_anchors_and_outliers(
         outliers.sort(key=lambda x: x["anomaly_score"], reverse=True)
         scene["median_l"] = round(med_l, 3)
         scene["anchor_stem"] = best_stem
+        if norm_pref is not None:
+            scene["anchor_in_preferred"] = restrict_anchor
+            scene["preferred_count"] = len(pref_items)
         scene["outlier_count"] = len(outliers)
         scene["outliers"] = outliers
 
@@ -704,6 +718,7 @@ def _finalize_segmentation(
     sensitivity: float,
     render_overview: bool,
     t0: float,
+    preferred_stems: set[str] | None = None,
 ) -> dict:
     segments = segment_timeline(
         photos,
@@ -714,7 +729,7 @@ def _finalize_segmentation(
         sensitivity=sensitivity,
     )
     scenes = cluster_segments(segments, photos, cluster_threshold=cluster_threshold)
-    pick_anchors_and_outliers(scenes, photos)
+    pick_anchors_and_outliers(scenes, photos, preferred_stems=preferred_stems)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     barcode_path = render_color_barcode(photos, segments, scenes, output_dir / "color_barcode.jpg")
@@ -791,6 +806,7 @@ def run_segmentation(
     sensitivity: float = 1.0,
     analysis_edge: int = 160,
     workers: int = min(4, os.cpu_count() or 1),
+    preferred_stems: set[str] | None = None,
 ) -> dict:
     """Scan an image/RAW folder, segment scenes, and write artifacts."""
     t0 = time.monotonic()
@@ -827,6 +843,7 @@ def run_segmentation(
         sensitivity=sensitivity,
         render_overview=True,
         t0=t0,
+        preferred_stems=preferred_stems,
     )
 
 
@@ -841,6 +858,7 @@ def resegment_from_json(
     cluster_threshold: float = 6.0,
     sensitivity: float = 1.0,
     render_images: bool = False,
+    preferred_stems: set[str] | None = None,
 ) -> dict:
     """Re-run scene segmentation purely from cached scenes.json features (zero disk reads on photo folder)."""
     t0 = time.monotonic()
@@ -875,4 +893,5 @@ def resegment_from_json(
         sensitivity=sensitivity,
         render_overview=render_images,
         t0=t0,
+        preferred_stems=preferred_stems,
     )

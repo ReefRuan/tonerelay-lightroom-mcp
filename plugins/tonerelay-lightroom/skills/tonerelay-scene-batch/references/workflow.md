@@ -19,13 +19,14 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
 
 ## 标准 5 步低 Token 工作流
 
-### 第 1 步：固定色温场景自动分块（0 Token，不连 Lightroom）
+### 第 1 步：固定色温场景自动分块（0 Token，默认不连 Lightroom）
 扫描本地 RAW/JPEG 目录，在 CIE Lab 中性低饱和区域检测环境色温跳变，合并同光源串场，自动挑选每个场景最清晰居中的 `anchor_stem`（默认启用轻量并发 `min(4, CPU 核心数)`，适合本地 SSD；读取慢速存储可加 `--workers 1`）：
 
 ```powershell
 & $PY $CLI segment --input "<照片目录>" --output "<工作目录>/seg"
 ```
 
+- **可选从已选片中挑锚点**：若已在 Lightroom 挑完片，可加 `--anchor-flag pick --folder-name "<LR文件夹名>"`（或 `--prefer-stems ...`），在保持全量时间轴分块精度的同时确保每组 `anchor_stem` 落在精选片中。
 - 产物：`scenes.json`、`color_barcode.jpg`、`scene_overview.jpg`
 - **零原图重解码调参**：如果已生成 `scenes.json` 且想微调分块参数（如 `--wb-jump`、`--cluster-threshold`、`--sensitivity`），用 `--resegment` 直接读缓存特征调优（可加 `--render-overview` 刷新概览图）：
   ```powershell
@@ -33,10 +34,16 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
   ```
 - **Agent 操作**：只查看 `color_barcode.jpg` 和 `scene_overview.jpg`（2 张图）确认分块合理与每个场景的 `anchor_stem`。
 
-### 第 2 步：大模型只精修每个场景的 1 张锚点图（ToneRelay MCP）
-- 通过 ToneRelay MCP 对每个场景的 `anchor_stem`（例如 `S01`..`S0N`，通常只需 4～8 张）在工作虚拟副本上调色至满意。
-- **重要（白平衡铁律）**：在未改动过的 `"As Shot"` RAW 上，`Temperature` 和 `Tint` 在 `before` 里缺失；ToneRelay MCP 的 `trlr_apply_settings` 在 `before` 缺另一项时会拦截单传改色温/色调。使用本工作流或同时成对传入 `Temperature` 与 `Tint`（例如 `{"Temperature": 4500, "Tint": 6}`）时，`lr-ops` `apply_candidate` 会自动切到 `Custom` 白平衡并双双生效；切勿只传其中一项。
-- 已有非保护虚拟副本时，直接沿用该 `vc_uuid` 用 `trlr_apply_settings` 修改，不要重复新建副本。
+### 第 2 步：大模型只精修每个场景的 1 张锚点图（`apply-anchor` / ToneRelay MCP）
+- 对每个场景的 `anchor_stem`（例如 `S01`..`S0N`，通常只需 4～8 张）在工作虚拟副本上调色至满意。
+- **重要（未改过 `"As Shot"` RAW 白平衡直通）**：在未改动过的 `"As Shot"` RAW 上，ToneRelay MCP 的 `trlr_apply_settings` 会拦截 `Temperature`/`Tint` 写入；**直接使用 `cli.py apply-anchor` 成对传入 `Temperature` 与 `Tint`**，一条命令完成 `WB=Custom` 写入、`0 mismatch` 回读校验与可选预览图导出：
+  ```powershell
+  & $PY $CLI apply-anchor `
+    --folder-name "<LR文件夹名>" --stem "<锚点文件名不含后缀>" `
+    --settings '{"Temperature": 4500, "Tint": 12, "Exposure2012": 0.25, "Highlights2012": -55, "Shadows2012": 35}' `
+    --render "<工作目录>/anchor_S01.jpg"
+  ```
+- 已有非保护虚拟副本时，直接沿用该 `vc_uuid` 修改，不要重复新建副本。
 
 ### 第 3 步：从 Lightroom 回读锚点配方并生成同步计划（0 Token）
 ```powershell
@@ -56,10 +63,10 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
 
 - `--flag` 支持 `pick`（默认，仅旗标精选）、`unflagged`（未标记）、`reject` 或 `all`（按需适配三层挑片法）。
 - 若某些锚点是手动指定的副本 UUID，可用 `--anchor S01=<vc_uuid> --anchor S02=<vc_uuid>` 显式指定。
-- `read-anchors` 默认**不带入裁剪参数 `Crop*`**（每张构图裁剪通常不同）；若确实需要把锚点裁剪也同步，可加 `--include-crop`。
+- `read-anchors` 默认**显式输出锚点的 `ToneCurvePV2012*`（含默认线性 `[0, 0, 255, 255]`）**，以便覆写既有工作虚拟副本时彻底清除残留旧曲线（不需要时加 `--omit-default-curves`）；默认**不带入裁剪参数 `Crop*`**（需要时加 `--include-crop`）。
 - `--auto-exposure` 与 `--auto-nr` 根据同组照片相对锚点的 EXIF 亮度（BV）与 ISO 差异做有界自动曝光/降噪微调，消耗 0 Token。
 
-### 第 4 步：0-Token 批量同步写入 + 串行导出
+### 第 4 步：0-Token 批量同步写入 + 串行导出（禁止高频轮询）
 先用 `--dry-run` 核对数量（零写入）：
 ```powershell
 & $PY $CLI sync `
@@ -68,7 +75,7 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
   --output-dir "<导出目录>" `
   --dry-run
 ```
-确认后正式执行（严格单线程串行 `command_batch`，断点续传，自动跳过名称含 `保护`/`锁定`/`勿改`/`只读`/`留档`/`protected`/`locked`/`readonly` 等字样的副本，决不改原片 master）。
+确认后正式执行（严格单线程串行 `command_batch`，断点续传，自动跳过保护副本，决不改原片 master；同时向 `stderr` 输出进度与 ETA，并在 `sync_state.json` 顶部写入 `progress` 摘要）：
 若需要**限制导出文件大小（等效 Lightroom「文件大小限制为: N K」的 sRGB JPEG）**，加上 `--max-file-kb 2000`（可选配合 `--max-edge 4096` 控制长边并加速渲染）：
 ```powershell
 & $PY $CLI sync `
@@ -78,6 +85,7 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
   --max-file-kb 2000 `
   --batch-size 12
 ```
+> **零轮询省 Token 原则**：Lightroom 串行导出通常为 6–10 秒/张（250 张约 30–50 分钟）。启动 `sync` 后应等待进程退出通知，**避免每 1–2 分钟唤醒模型轮询状态**；仅在超时未结束或粗粒度间隔（≥ 10–15 分钟）时查看一次 `sync_state.json` 中的 `progress` 字段即可。
 > 若之前已经调完色，只需要把已调好的虚拟副本按体积上限重新导出，可直接运行 `--export-only --max-file-kb 2000`（0 次参数写入，仅串行重导）。
 
 ### 第 5 步：全量导出拼图质检 + 旋转缩放裁剪突出主体（少 Token 闭环）
@@ -116,8 +124,9 @@ $CLI = "<path-to-skill>/scripts/scene_batch/cli.py"
 ---
 
 ## 严禁与推荐实践
-1. **避免大目录全量高分辨率看图**：先看 `color_barcode.jpg` / `scene_overview.jpg` / `outliers_sheet.jpg` / `audit_sheet_*.jpg` 拼图定位问题，仅对少数存疑或锚点单张看图。
-2. **不要开多个子代理同时抢 Lightroom Bridge**：Lightroom 队列是严格单线程的，并行子代理会导致 `probe_client` 超时重试。
-3. **不要用大模型循环逐张调用 `trlr_apply_settings` / `trlr_export_image`**：20 张以上全部走 `scene_batch` `sync`。
-4. **重做全片时无需新建第二批副本**：`plan` 会自动识别并复用每张图现有的非保护工作虚拟副本。
-5. **慢速存储可随时切回单线程顺序扫描**：常规在本地 SSD 上运行即可用默认并发；若临时扫描慢速外接盘或网络盘，在 `segment` / `audit` 中传 `--workers 1`。
+1. **大批量任务优先在新对话启动，并严禁高频轮询后台 `sync`**：避免把长历史缓存带入每轮调用，也避免在 Lightroom 导出期间反复唤醒轮询浪费 Token。
+2. **避免大目录全量高分辨率看图**：先看 `color_barcode.jpg` / `scene_overview.jpg` / `outliers_sheet.jpg` / `audit_sheet_*.jpg` 拼图定位问题，仅对少数存疑或锚点单张看图。
+3. **不要开多个子代理同时抢 Lightroom Bridge**：Lightroom 队列是严格单线程的，并行子代理会导致 `probe_client` 超时重试。
+4. **不要用大模型循环逐张调用 `trlr_apply_settings` / `trlr_export_image`**：20 张以上全部走 `scene_batch` `sync`。
+5. **重做全片时无需新建第二批副本**：`plan` 会自动识别并复用每张图现有的非保护工作虚拟副本，`read-anchors` 默认显式写出曲线键以清零残留旧曲线。
+6. **慢速存储可随时切回单线程顺序扫描**：常规在本地 SSD 上运行即可用默认并发；若临时扫描慢速外接盘或网络盘，在 `segment` / `audit` 中传 `--workers 1`。
