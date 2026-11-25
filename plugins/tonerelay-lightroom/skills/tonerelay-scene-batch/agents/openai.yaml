@@ -1,0 +1,6 @@
+interface:
+  display_name: "ToneRelay Scene Batch"
+  short_description: "多场景固定色温分块、锚点精修与 0-Token Lightroom 批量同步导出。"
+  default_prompt: "使用 $tonerelay-scene-batch 对当前目录的多场景照片做固定色温分段、锚点精修定调、批量同步导出与拼图质检。"
+policy:
+  allow_implicit_invocation: true
