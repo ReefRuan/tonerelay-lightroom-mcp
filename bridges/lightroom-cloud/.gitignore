@@ -1,0 +1,4 @@
+node_modules/
+*.log
+# per-machine controller pairing id, regenerated on first run
+.lr-client.json
